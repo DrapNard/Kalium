@@ -527,10 +527,20 @@ impl KaliumApp {
                     }
                 });
             ui.separator();
-            ui.label(egui::RichText::new("Channels painted on this layer:").small().weak());
-            for c in Channel::ALL {
-                if layer.pixels.contains_key(&c) {ui.label(format!("• {}",c.label()));}
-            }
+            ui.label(egui::RichText::new("Layer channels (Painter-style toggles):").small().weak());
+            ui.label(egui::RichText::new("Disabled channels keep their pixels for later reactivation.").small().weak());
+            ui.horizontal_wrapped(|ui| {
+                for c in Channel::ALL {
+                    let mut enabled=!layer.disabled_channels.contains(&c);
+                    let has_pixels=layer.pixels.contains_key(&c);
+                    let label=format!("{}{}",if has_pixels {"● "}else{"○ "},c.label());
+                    if ui.checkbox(&mut enabled,label).changed() {
+                        if enabled {layer.disabled_channels.remove(&c);}
+                        else {layer.disabled_channels.insert(c);}
+                        changed=true;
+                    }
+                }
+            });
             ui.horizontal_wrapped(|ui| {
                 if ui.small_button("Invert mask").clicked(){self.perform(Action::InvertMask);}
                 if ui.small_button("Reset mask").clicked(){self.perform(Action::ResetMask);}
@@ -661,7 +671,7 @@ impl KaliumApp {
     fn autosave_workspace(&mut self) {
         if self.last_layout_save.elapsed()<Duration::from_secs(2) {return;}
         self.last_layout_save=Instant::now();
-        if let Ok(layout)=serde_json::to_vec(&self.dock) {
+        if let Ok(layout)=layout::encode_workspace(&self.dock) {
             if layout!=self.saved_layout {
                 match layout::persist_workspace(&self.dock) {
                     Ok(_)=>self.saved_layout=layout,

@@ -2,6 +2,23 @@
 
 Kalium author and release identity: **DrapNard** (https://github.com/DrapNard). All changes distributed as AGPL-3.0-only.
 
+## v0.2.0-alpha.5 — 2026-10-10
+
+DrapNard source update, based on the 28/29 successful local unit tests reported from v0.2.0-alpha.4. **This update has not been compiled in the packaging environment.**
+
+### Fixed
+- `layout::tests::workspace_json_roundtrips`: egui_dock initializes not-yet-shown leaf/split rectangles with `Rect::NOTHING` (non-finite floats); JSON writes these as `null` even though `f32` deserialization rejects `null`. Only `min`/`max` coordinate pairs are normalized to finite zeroes, leaving legitimate optional `null` fields intact.
+- Both workspace persistence and autosave now use the same safe serialization path; loading also repairs older JSON layouts with non-finite rectangles where possible, preserving docked/floating panel arrangement.
+- Regression tests cover default layouts, floating panel window configuration and recovery of older JSON with `null` coordinates.
+
+### Added
+- Per-layer, per-PBR-channel enable/disable switches in the **Layers** pane (Base Color, Roughness, Metallic, Normal, Height, Emissive, Opacity, AO). Toggling a channel affects the visible composite and exported PBR maps without deleting any painted pixels.
+- `.kalium` manifest **v2** stores `disabled_channels`; loader remains compatible with **v1** manifests, which default to all channels enabled. Disabling a channel is non-destructive and survives saving/reopening.
+- Unit tests for channel compositing, project round-trip and v1 metadata defaults.
+
+### Still missing
+- Multiple mesh material texture sets, GPU viewport and interactive GPU strokes, advanced bake maps, smart materials, and `.spp` round-trips. The new channel switches are not a substitute for full Substance Painter functionality.
+
 ## v0.2.0-alpha.4 — 2026-10-10
 
 DrapNard source release. Substance Painter UI parity is the long-term design target, not an achieved feature claim. Changes are written in real Rust code; **compilation and GUI behavior must still be validated on a Rust-equipped machine**.

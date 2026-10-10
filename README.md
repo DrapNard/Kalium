@@ -4,7 +4,7 @@
 
 Kalium is an independent texture-painting application aiming for interoperability with Adobe Substance 3D Painter and its asset ecosystem. Kalium is **not** an Adobe product and is not affiliated with Adobe.
 
-> **CURRENT STATUS: v0.2.0-alpha.4 / DRAPNARD SOURCE RELEASE.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. This package was assembled in an environment without Rust installed, so it has **not been compiled or runtime-tested in this environment**. Tests are included to run on your own machine.
+> **CURRENT STATUS: v0.2.0-alpha.5 / DRAPNARD SOURCE RELEASE.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. This package was assembled in an environment without Rust installed, so it has **not been compiled or runtime-tested in this environment**. Tests are included to run on your own machine.
 
 ## Current features
 
@@ -34,7 +34,13 @@ Kalium is an independent texture-painting application aiming for interoperabilit
 - `.spp` **signature check only** (HDF5 identification, when applicable). This is **not `.spp` import**.
 - No authentication, cloud services, AI generation, telemetry, or subscriptions.
 
-### Dockable UI workspace (v0.2.0-alpha.4)
+### Workspace serialization and channel switches (v0.2.0-alpha.5)
+
+The `egui_dock` layout JSON round-trip failure (`invalid type: null, expected f32`) is addressed by normalizing uninitialized floating-point rectangle coordinates during workspace serialization and during loading old layout files. No need to delete your existing workspace. This fix is source-level until re-tested with Cargo.
+
+The **Layers** panel now has individual channel enable switches, comparable to Painter's per-layer material channel controls. Disabled channels are composited/exported as if that layer had no influence on the channel, but painted pixel data is retained. `.kalium` saves now emit manifest **v2** and still load **v1** documents.
+
+### Dockable UI workspace (v0.2.0-alpha.5)
 
 Use **View → Show / hide panels** to reopen closed panes, **View → Restore default workspace** to reset the desktop-like arrangement, or drag a tab header to dock/undock/reorder panels. All panel sizes, tabs and floating positions are serialized to a user configuration file. This is editor-level state and is **not** saved inside `.kalium` projects.
 
@@ -42,7 +48,7 @@ Use **View → Show / hide panels** to reopen closed panes, **View → Restore d
 - Windows: `%APPDATA%\kalium\workspace-v1.json`
 - macOS (when `XDG_CONFIG_HOME` is not configured): `~/.config/kalium/workspace-v1.json`. Native Application Support is a future platform improvement.
 
-The v0.2.0-alpha.4 default layout now gives additional width to the 3D and 2D workspaces. Existing layout files will **not** be overwritten by this update; use **View → Restore default workspace** to switch to the new proportions.
+The v0.2.0-alpha.4 default layout gives additional width to the 3D and 2D workspaces. Existing layout files will **not** be overwritten by this update; use **View → Restore default workspace** to switch to the new proportions.
 
 The Assets panel currently exposes the **implemented brush presets and texture-import operations**. It does not pretend to ship the materials shown in the design reference. Texture Set List currently displays the actual single texture set. Multi-set authoring, Substance preset parsing and Smart Materials are not implemented yet.
 

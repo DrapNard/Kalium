@@ -1,8 +1,8 @@
-# Build and verification status — v0.2.0-alpha.4
+# Build and verification status — v0.2.0-alpha.5
 
 Maintainer / version identity: **DrapNard**.
 
-This source iteration was prepared without installed `rustc`/`cargo` and without internet access to install them. None of the Rust code or WGSL shader has been compiled, run, or hardware-validated here. The presence of a CI job is not evidence that CI passed.
+This source iteration was prepared without installed `rustc`/`cargo` and without internet access to install them. In this packaging environment no Rust toolchain is installed. The user reported that 28 of the 29 tests in v0.2.0-alpha.4 passed on Arch Linux; the single failed test was `layout::tests::workspace_json_roundtrips` and its panic included `invalid type: null, expected f32`. These are *user-provided previous-version* results, not verification that this new iteration compiles. The new Rust and WGSL code have not been compiled here. The presence of a CI job is not evidence that CI passed.
 
 ## Checks performed for the downloadable package
 
@@ -15,7 +15,7 @@ This source iteration was prepared without installed `rustc`/`cargo` and without
 - [x] Static delimiter inspection on the edited Rust sources. This is **not** a Rust parse or compilation test.
 - [x] Workspace source contains independent 3D/UV editors, `egui_dock` dependency pinned to the egui 0.31-compatible version, eight closable panels and JSON workspace persistence.
 - [x] Source assertions for reported float literal widths and the must-use Texture Set row warning.
-- [x] The new layer duplication, mask editing and framebuffer size tests exist as Rust unit tests.
+- [x] The previous layer duplication, mask editing and framebuffer size tests exist; new tests cover workspace serialization and PBR channel switches.
 - [ ] **Rust compilation / unit tests:** not run; compiler not present.
 - [ ] GUI opened to verify panel placement / dragging. Not available here.
 

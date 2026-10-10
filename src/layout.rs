@@ -2,6 +2,7 @@
 //! Layout state is stored per user, separately from artistic document content.
 use std::{env,fs,path::PathBuf};
 use egui_dock::{DockState,NodeIndex};
+use serde_json::Value;
 use serde::{Deserialize,Serialize};
 
 #[derive(Debug,Clone,Copy,PartialEq,Eq,Hash,Serialize,Deserialize)]
@@ -53,13 +54,53 @@ pub fn workspace_file()->Option<PathBuf> {
 
 pub fn load_workspace()->DockState<Pane> {
     workspace_file().and_then(|p|fs::read(p).ok())
-        .and_then(|data|serde_json::from_slice::<DockState<Pane>>(&data).ok())
+        .and_then(|data|decode_workspace(&data).ok())
         .filter(|state|Pane::ALL.iter().any(|pane|state.find_tab(pane).is_some()))
         .unwrap_or_else(default_workspace)
 }
 
+// New egui_dock nodes use Rect::NOTHING, whose x/y coordinates are infinite.
+// serde_json turns these infinities into null; deserializing that as f32 fails.
+// Repair only coordinate *objects* (the {min:{x,y},max:{x,y}} shape), not
+// meaningful null Option<T> fields such as focused_node or window state.
+// This also repairs workspace JSON written by earlier Kalium alphas.
+fn normalize_rectangles(value:&mut Value) {
+    match value {
+        Value::Object(fields)=>{
+            if fields.contains_key("min") && fields.contains_key("max") {
+                for corner in ["min","max"] {
+                    if let Some(Value::Object(coords))=fields.get_mut(corner) {
+                        if coords.contains_key("x") && coords.contains_key("y") {
+                            for axis in ["x","y"] {
+                                if coords.get(axis).is_some_and(Value::is_null) {
+                                    coords.insert(axis.to_owned(),Value::from(0.0));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for subvalue in fields.values_mut() {normalize_rectangles(subvalue);}
+        }
+        Value::Array(items)=>for item in items {normalize_rectangles(item);},
+        _=>{}
+    }
+}
+
+pub fn encode_workspace(state:&DockState<Pane>)->anyhow::Result<Vec<u8>> {
+    let mut json=serde_json::to_value(state)?;
+    normalize_rectangles(&mut json);
+    Ok(serde_json::to_vec_pretty(&json)?)
+}
+
+pub fn decode_workspace(bytes:&[u8])->anyhow::Result<DockState<Pane>> {
+    let mut json:Value=serde_json::from_slice(bytes)?;
+    normalize_rectangles(&mut json);
+    Ok(serde_json::from_value(json)?)
+}
+
 pub fn persist_workspace(state:&DockState<Pane>)->anyhow::Result<Vec<u8>> {
-    let encoded=serde_json::to_vec_pretty(state)?;
+    let encoded=encode_workspace(state)?;
     if let Some(path)=workspace_file() {
         if let Some(parent)=path.parent() {fs::create_dir_all(parent)?;}
         let tmp=path.with_extension("json.tmp");
@@ -86,8 +127,42 @@ mod tests {
     #[test]
     fn workspace_json_roundtrips() {
         let dock=default_workspace();
-        let bytes=serde_json::to_vec(&dock).unwrap();
-        let decoded:DockState<Pane>=serde_json::from_slice(&bytes).unwrap();
+        let bytes=encode_workspace(&dock).unwrap();
+        let decoded=decode_workspace(&bytes).unwrap();
+        let json=String::from_utf8(bytes).unwrap();
+        // None is a legal JSON null (e.g. focused_node), not a corrupted f32.
+        assert!(!json.contains("\"x\": null"));
+        assert!(!json.contains("\"y\": null"));
         for pane in Pane::ALL {assert_eq!(dock.find_tab(&pane).is_some(), decoded.find_tab(&pane).is_some());}
     }
+    #[test]
+    fn not_yet_displayed_and_floating_panels_serialize() {
+        let mut dock=default_workspace();
+        let window=dock.add_window(vec![Pane::BrushStudio]);
+        dock.get_window_state_mut(window).unwrap()
+            .set_position(eframe::egui::pos2(320.0,155.0))
+            .set_size(eframe::egui::vec2(440.0,290.0));
+        let bytes=encode_workspace(&dock).unwrap();
+        let decoded=decode_workspace(&bytes).unwrap();
+        assert!(decoded.find_tab(&Pane::Viewport3D).is_some());
+        assert!(decoded.find_tab(&Pane::Assets).is_some());
+        assert!(String::from_utf8(bytes).unwrap().contains("320.0"));
+    }
+
+    #[test]
+    fn old_workspace_with_null_geometry_is_repaired_without_erasing_options() {
+        let dock=default_workspace();
+        let original=serde_json::to_vec(&dock).unwrap();
+        let repaired=decode_workspace(&original).unwrap();
+        for pane in Pane::ALL {
+            assert_eq!(repaired.find_tab(&pane).is_some(),dock.find_tab(&pane).is_some());
+        }
+        let sample=serde_json::json!({"rect":{"min":{"x":null,"y":3.0},"max":{"x":4.0,"y":null}},"focused_node":null});
+        let mut normalized=sample;
+        normalize_rectangles(&mut normalized);
+        assert!(normalized["focused_node"].is_null());
+        assert_eq!(normalized["rect"]["min"]["x"],0.0);
+        assert_eq!(normalized["rect"]["max"]["y"],0.0);
+    }
+
 }

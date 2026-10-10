@@ -16,6 +16,7 @@ Kalium follows Semantic Versioning for release numbering and uses pre-release id
 - `v0.2.0-alpha.2` — UV-aware painting, flood-fill and experimental compute source iteration, 2026-10-10.
 - `v0.2.0-alpha.3` — source-level dockable Substance-inspired workspace, 2026-10-10.
 - `v0.2.0-alpha.4` — functional Layers/Mask actions, tool shelf, responsive viewport, 2026-10-10.
+- `v0.2.0-alpha.5` — dock serialization fix, non-destructive per-layer PBR channel enable states, `.kalium` manifest v2, 2026-10-10.
 
 Until v1.0, feature formats and APIs may change, but format migrations should not silently discard data.
 

@@ -27,16 +27,20 @@ struct LayerManifest {
     opacity:f32,
     blend:BlendMode,
     channels:Vec<Channel>,
+    /// Introduced in manifest v2; omitted in v1 projects.
+    #[serde(default)]
+    disabled_channels:Vec<Channel>,
 }
 
 pub fn save(doc:&Document,path:&Path)->Result<()> {
     doc.validate()?;
     let manifest=Manifest {
-        format:"Kalium Project".into(),version:1,size:doc.size,mesh:doc.mesh.clone(),
+        format:"Kalium Project".into(),version:2,size:doc.size,mesh:doc.mesh.clone(),
         selected:doc.selected,next_layer_id:doc.next_layer_id,
         layers:doc.layers.iter().map(|l|LayerManifest {
             id:l.id,name:l.name.clone(),visible:l.visible,opacity:l.opacity,blend:l.blend,
             channels:Channel::ALL.into_iter().filter(|c|l.pixels.contains_key(c)).collect(),
+            disabled_channels:Channel::ALL.into_iter().filter(|c|l.disabled_channels.contains(c)).collect(),
         }).collect(),
     };
     let filename=path.file_name().ok_or_else(||anyhow!("Invalid save filename"))?;
@@ -88,7 +92,7 @@ pub fn load(path:&Path)->Result<Document> {
         bail!("Project contains too many ZIP entries");
     }
     let manifest:Manifest=serde_json::from_slice(&read_entry(&mut zip,"manifest.json",48*1024*1024)?)?;
-    if manifest.format!="Kalium Project" || manifest.version!=1 {bail!("Unsupported Kalium project version");}
+    if manifest.format!="Kalium Project" || !matches!(manifest.version,1|2) {bail!("Unsupported Kalium project version");}
     if !(64..=MAX_SIZE).contains(&manifest.size) {bail!("Invalid texture dimension");}
     if manifest.layers.is_empty()||manifest.layers.len()>MAX_LAYERS {bail!("Invalid layer count");}
     manifest.mesh.validate()?;
@@ -132,6 +136,7 @@ pub fn load(path:&Path)->Result<Document> {
     for m in manifest.layers {
         let mut layer=Layer::new(m.id,m.name,doc.size);
         layer.visible=m.visible;layer.opacity=m.opacity;layer.blend=m.blend;
+        layer.disabled_channels=m.disabled_channels.into_iter().collect();
         let mask=read_entry(&mut zip,&format!("layers/{}/mask.png",m.id),pixels_bytes+4*1024*1024)?;
         let decoded=image::load_from_memory(&mask)?.to_luma8();
         if decoded.dimensions()!=(doc.size,doc.size) {bail!("Mask dimensions do not match project");}
@@ -159,11 +164,30 @@ mod tests {
         doc.selected_layer_mut().mask.put_pixel(12,12,Luma([70]));
         doc.selected_layer_mut().pixels_mut(Channel::BaseColor,64).put_pixel(11,10,Rgba([12,34,56,200]));
         let path=std::env::temp_dir().join(format!("kalium-test-{}.kalium",std::process::id()));
+        doc.selected_layer_mut().disabled_channels.insert(Channel::BaseColor);
         save(&doc,&path).unwrap();
         let loaded=load(&path).unwrap();
         std::fs::remove_file(path).ok();
         assert_eq!(loaded.layers.len(),2);
+        assert!(loaded.selected_layer().disabled_channels.contains(&Channel::BaseColor));
         assert_eq!(loaded.layers[1].mask.get_pixel(12,12).0,[70]);
         assert_eq!(loaded.layers[1].pixels[&Channel::BaseColor].get_pixel(11,10).0,[12,34,56,200]);
     }
+    #[test]
+    fn legacy_v1_manifest_defaults_to_enabled_channels() {
+        let json=r#"{"id":1,"name":"Legacy","visible":true,"opacity":1.0,"blend":"Normal","channels":["BaseColor"]}"#;
+        let layer:LayerManifest=serde_json::from_str(json).unwrap();
+        assert!(layer.disabled_channels.is_empty());
+    }
+
+    #[test]
+    fn bundled_v1_demo_remains_loadable() {
+        let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples/Kalium-Demo.kalium");
+        let doc=load(&path).unwrap();
+        assert!(doc.layers.len()>0);
+        assert!(doc.layers.iter().all(|l|l.disabled_channels.is_empty()));
+        doc.validate().unwrap();
+    }
+
 }

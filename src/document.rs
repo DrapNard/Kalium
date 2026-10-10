@@ -55,13 +55,15 @@ pub struct Layer {
     pub opacity: f32,
     pub blend: BlendMode,
     pub pixels: HashMap<Channel,RgbaImage>,
+    /// Disabled PBR channels remain editable and stored, but are skipped by compositing.
+    pub disabled_channels: HashSet<Channel>,
     pub mask: GrayImage,
 }
 
 impl Layer {
     pub fn new(id:u32,name:impl Into<String>,size:u32)->Self {
         Self {id,name:name.into(),visible:true,opacity:1.0,blend:BlendMode::Normal,
-            pixels:HashMap::new(),mask:ImageBuffer::from_pixel(size,size,Luma([255]))}
+            pixels:HashMap::new(),disabled_channels:HashSet::new(),mask:ImageBuffer::from_pixel(size,size,Luma([255]))}
     }
     pub fn pixels_mut(&mut self,channel:Channel,size:u32)->&mut RgbaImage {
         self.pixels.entry(channel).or_insert_with(||RgbaImage::new(size,size))
@@ -151,6 +153,7 @@ impl Document {
         let mut out=ImageBuffer::from_pixel(size,size,Rgba(channel.background()));
         for layer in &self.layers {
             if !layer.visible || layer.opacity<=0.0 {continue;}
+            if layer.disabled_channels.contains(&channel) {continue;}
             let Some(src)=layer.pixels.get(&channel) else {continue};
             let data=src.as_raw();
             let masks=layer.mask.as_raw();
@@ -219,6 +222,8 @@ mod tests {
         assert_eq!(doc.layers[0].pixels[&Channel::Metallic].get_pixel(2,3).0,[123,123,123,255]);
         doc.invert_selected_mask();
         assert_eq!(doc.layers[1].mask.get_pixel(2,3).0,[210]);
+        doc.layers[1].disabled_channels.insert(Channel::Metallic);
+        assert!(!doc.layers[0].disabled_channels.contains(&Channel::Metallic));
         doc.validate().unwrap();
     }
     #[test]
@@ -229,4 +234,17 @@ mod tests {
         doc.selected_layer_mut().mask.put_pixel(4,4,Luma([0]));
         assert_eq!(doc.composite(Channel::BaseColor).get_pixel(4,4).0,Channel::BaseColor.background());
     }
+    #[test]
+    fn disabled_channel_keeps_source_but_skips_compositing() {
+        let mut doc=Document::new(64);
+        doc.selected_layer_mut().pixels_mut(Channel::BaseColor,64)
+            .put_pixel(4,5,Rgba([24,38,52,255]));
+        assert_eq!(doc.composite(Channel::BaseColor).get_pixel(4,5).0,[24,38,52,255]);
+        doc.selected_layer_mut().disabled_channels.insert(Channel::BaseColor);
+        assert_eq!(doc.composite(Channel::BaseColor).get_pixel(4,5).0,Channel::BaseColor.background());
+        assert_eq!(doc.selected_layer().pixels[&Channel::BaseColor].get_pixel(4,5).0,[24,38,52,255]);
+        doc.selected_layer_mut().disabled_channels.remove(&Channel::BaseColor);
+        assert_eq!(doc.composite(Channel::BaseColor).get_pixel(4,5).0,[24,38,52,255]);
+    }
+
 }
