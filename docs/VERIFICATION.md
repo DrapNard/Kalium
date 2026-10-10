@@ -41,3 +41,17 @@ After these, manual testing is needed in the native GUI for painting, imported U
 - The package creation process checks the source archive, Git bundle, hotfix diff and release metadata.
 - This environment does **not** provide `cargo` or `rustc`: no successful compile or unit test is asserted for alpha.5.1.
 - Upgrade instructions explicitly protect changes in a pre-existing clone and warn against reapplying stale `app.rs`.
+
+## alpha.5.2 / Layer::new parser regression
+
+The reference source `src/document.rs` has explicitly closed blocks for `impl Layer`, the `Layer::new` method, and its `Self { .. }` initializer. The user-reported broken checkout had 411 lines, whereas alpha.5.1's tracked source had 250. Before investigating parser failures, compare your working tree to `HEAD` and save a copy of the modified file. See `docs/RECOVER_WORKTREE.md`.
+
+Run on a Rust-equipped machine:
+
+```sh
+cargo check --all-targets
+cargo test --all-targets
+cargo check --all-targets --features gpu-experimental
+```
+
+Packaging environment has no `rustc`/`cargo`; these commands have **not** run in this environment.

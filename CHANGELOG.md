@@ -2,6 +2,16 @@
 
 Kalium author and release identity: **DrapNard** (https://github.com/DrapNard). All changes distributed as AGPL-3.0-only.
 
+## v0.2.0-alpha.5.2 — 2026-10-11
+
+**Source hotfix under DrapNard.** A user build failed with `unclosed delimiter` at the `impl Layer` / `Layer::new` block in a 411-line local `src/document.rs`. The tagged alpha.5.1 source has only 250 lines and already has closed delimiters, indicating that this particular checkout contains additional local edits or a stale stash; simply fetching a new bundle does not replace local changes.
+
+- Expand the `Layer::new` structure initializer into explicit lines and block delimiters, preserving behavior.
+- Add a regression test for construction of a fully initialized, editable layer.
+- Add a checkout-recovery guide that backs up local edits, fast-forwards to the new release, and verifies the exact checked-out version **before** any stash is re-applied.
+- No feature parity with Adobe Substance Painter is claimed or introduced by this syntax-focused hotfix.
+- Rust/Cargo are unavailable in this packaging environment. Git and packaging integrity can be verified, but compilation and test results must be obtained on a Rust-equipped machine.
+
 ## v0.2.0-alpha.5.1 — 2026-10-11
 
 **Hotfix under the DrapNard release identity.** The user reported a Rust parser error (`unclosed delimiter`) around `KaliumApp::autosave_workspace()` after updating to alpha.5. The original alpha.5 bundle does contain a closed function, so the reported error could also be caused by older local changes or an applied stash. This hotfix makes the function explicit and flatter, eliminating deeply nested closing delimiters while preserving workspace saving behavior. Failure to encode the workspace now also reports an error in the status bar.

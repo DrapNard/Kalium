@@ -61,9 +61,17 @@ pub struct Layer {
 }
 
 impl Layer {
-    pub fn new(id:u32,name:impl Into<String>,size:u32)->Self {
-        Self {id,name:name.into(),visible:true,opacity:1.0,blend:BlendMode::Normal,
-            pixels:HashMap::new(),disabled_channels:HashSet::new(),mask:ImageBuffer::from_pixel(size,size,Luma([255]))}
+    pub fn new(id: u32, name: impl Into<String>, size: u32) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            visible: true,
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+            pixels: HashMap::new(),
+            disabled_channels: HashSet::new(),
+            mask: ImageBuffer::from_pixel(size, size, Luma([255])),
+        }
     }
     pub fn pixels_mut(&mut self,channel:Channel,size:u32)->&mut RgbaImage {
         self.pixels.entry(channel).or_insert_with(||RgbaImage::new(size,size))
@@ -201,6 +209,20 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn layer_constructor_initializes_empty_channels_and_opaque_mask() {
+        let layer = Layer::new(99, "Fresh Paint", 64);
+        assert_eq!(layer.id, 99);
+        assert_eq!(layer.name, "Fresh Paint");
+        assert!(layer.visible);
+        assert_eq!(layer.opacity, 1.0);
+        assert_eq!(layer.blend, BlendMode::Normal);
+        assert!(layer.pixels.is_empty());
+        assert!(layer.disabled_channels.is_empty());
+        assert_eq!(layer.mask.dimensions(), (64, 64));
+        assert!(layer.mask.pixels().all(|pixel| pixel.0[0] == 255));
+    }
+
     #[test]
     fn blank_layers_preserve_background() {
         let doc=Document::new(64);
