@@ -9,12 +9,12 @@ Kalium is an independent project; do not publish it under an Adobe name or imply
 5. Commit and sign/tag with the maintainer's own locally configured Git identity. Do not fabricate email addresses or signatures.
 6. Publish an archive plus its SHA-256; mark source-only releases honestly and avoid claiming compiled binaries unless built and tested.
 
-**Current release candidate:** `v0.2.0-alpha.2`, by DrapNard. No compilation evidence exists yet for this archive because the generating environment had no Rust compiler and no network to install one.
+**Current release candidate:** `v0.2.0-alpha.3`, by DrapNard. No compilation evidence exists yet for this archive because the generating environment had no Rust compiler and no network to install one.
 
-A portable **Git bundle** accompanies the source ZIP. It contains a reconstructed history with a baseline `v0.1.0-alpha` snapshot and the `v0.2.0-alpha.1` and `v0.2.0-alpha.2` iterations tagged under the author name DrapNard. These are local release-package commits, **not** pre-existing GitHub commits. Because a verified email was not available, bundle commits use the technical, non-deliverable placeholder `noreply@kalium.invalid`. The maintainer should set their real Git identity for subsequent commits.
+A portable **Git bundle** accompanies the source ZIP. It contains a reconstructed history with a baseline `v0.1.0-alpha` snapshot and the `v0.2.0-alpha.1` and `v0.2.0-alpha.3` iterations tagged under the author name DrapNard. These are local release-package commits, **not** pre-existing GitHub commits. Because a verified email was not available, bundle commits use the technical, non-deliverable placeholder `noreply@kalium.invalid`. The maintainer should set their real Git identity for subsequent commits.
 
 ```bash
-git clone Kalium-v0.2.0-alpha.2-git.bundle Kalium
+git clone Kalium-v0.2.0-alpha.3-git.bundle Kalium
 cd Kalium
 git tag --list
 ```

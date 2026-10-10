@@ -4,11 +4,14 @@
 
 Kalium is an independent texture-painting application aiming for interoperability with Adobe Substance 3D Painter and its asset ecosystem. Kalium is **not** an Adobe product and is not affiliated with Adobe.
 
-> **CURRENT STATUS: v0.2.0-alpha.2 / DRAPNARD SOURCE RELEASE.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. This package was assembled in an environment without Rust installed, so it has **not been compiled or runtime-tested in this environment**. Tests are included to run on your own machine.
+> **CURRENT STATUS: v0.2.0-alpha.3 / DRAPNARD SOURCE RELEASE.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. This package was assembled in an environment without Rust installed, so it has **not been compiled or runtime-tested in this environment**. Tests are included to run on your own machine.
 
 ## Current features
 
 - Native Rust desktop application using **egui/eframe + wgpu** for rendering the UI.
+- **Dockable professional workspace**: draggable tabbed Assets, 3D Viewport, 2D/UV editor, Texture Set List, Layers, Texture Set Settings, Properties and Brush Studio. Panels can be resized, undocked into native floating windows, closed and restored via View.
+- **Side-by-side 3D and UV viewports**, inspired by the supplied layout reference (without copying branding or bundling the reference image).
+- Per-user workspace layout persistence in the platform config directory, independently from project files; View → Restore default workspace.
 - **DrapNard** release identity; native format and project owner information documented in [AUTHORS.md](AUTHORS.md).
 - 3D textured-mesh viewport, orbit camera (right-drag), zoom (scroll), triangle-based UV hit-testing, painting on the actual mesh surface.
 - 2D UV painting workspace, optional UV wireframe overlay. UV-polygon clipping driven by a bounded triangle rasterizer; empty atlas areas are protected by default.
@@ -28,6 +31,16 @@ Kalium is an independent texture-painting application aiming for interoperabilit
 - Configurable texture size 256, 512, 1024, 2048, or 4096 (nearest-neighbor resampling).
 - `.spp` **signature check only** (HDF5 identification, when applicable). This is **not `.spp` import**.
 - No authentication, cloud services, AI generation, telemetry, or subscriptions.
+
+### Dockable UI workspace (v0.2.0-alpha.3)
+
+Use **View → Show / hide panels** to reopen closed panes, **View → Restore default workspace** to reset the desktop-like arrangement, or drag a tab header to dock/undock/reorder panels. All panel sizes, tabs and floating positions are serialized to a user configuration file. This is editor-level state and is **not** saved inside `.kalium` projects.
+
+- Linux: `${XDG_CONFIG_HOME:-$HOME/.config}/kalium/workspace-v1.json`
+- Windows: `%APPDATA%\kalium\workspace-v1.json`
+- macOS (when `XDG_CONFIG_HOME` is not configured): `~/.config/kalium/workspace-v1.json`. Native Application Support is a future platform improvement.
+
+The Assets panel currently exposes the **implemented brush presets and texture-import operations**. It does not pretend to ship the materials shown in the design reference. Texture Set List currently displays the actual single texture set. Multi-set authoring, Substance preset parsing and Smart Materials are not implemented yet.
 
 ### Experimental compute brush
 

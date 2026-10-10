@@ -1,4 +1,4 @@
-# Build and verification status — v0.2.0-alpha.2
+# Build and verification status — v0.2.0-alpha.3
 
 Maintainer / version identity: **DrapNard**.
 
@@ -12,6 +12,9 @@ This source iteration was prepared without installed `rustc`/`cargo` and without
 - [x] Source ZIP integrity check (`ZipFile.testzip`) and extracted source layout.
 - [x] Git bundle verified with `git bundle verify`, version tags and isolated clone check.
 - [x] `git diff --check` before commit.
+- [x] Static delimiter inspection on the edited Rust sources. This is **not** a Rust parse or compilation test.
+- [x] Workspace source contains independent 3D/UV editors, `egui_dock` dependency pinned to the egui 0.31-compatible version, eight closable panels and JSON workspace persistence.
+- [ ] GUI opened to verify panel placement / dragging. Not available here.
 
 ## Checks still required on a host with Rust and a GPU
 
@@ -19,6 +22,7 @@ This source iteration was prepared without installed `rustc`/`cargo` and without
 cargo fmt --all -- --check
 cargo check --all-targets
 cargo test --all-targets
+cargo run --release # drag, undock, close/reopen panels and restart to test persistence
 cargo check --all-targets --features gpu-experimental
 cargo test --all-targets --features gpu-experimental
 cargo run -- validate examples/Kalium-Demo.kalium

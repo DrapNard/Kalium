@@ -2,6 +2,7 @@
 // A GUI-only Windows launcher can be added as a separate binary later.
 
 mod app;
+mod layout;
 mod brush_preset;
 mod cli;
 mod ops;

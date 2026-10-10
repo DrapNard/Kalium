@@ -2,6 +2,23 @@
 
 Kalium author and release identity: **DrapNard** (https://github.com/DrapNard). All changes distributed as AGPL-3.0-only.
 
+## v0.2.0-alpha.3 — 2026-10-10
+
+UI/workspace iteration by **DrapNard**. Source-only update: build and interactive execution were **not verified**, since Rust/Cargo are absent from the available environment.
+
+### Added
+- Replaced fixed sidebars and single-view toggle with a real `egui_dock` workspace: eight dockable, reorderable, detachable, closable panes.
+- 3D and UV/2D views are independent and visible simultaneously in the default layout, preserving painting/picking behavior in both.
+- New panels and toolbar structure: Assets, Texture Set List, Layers, Texture Set Settings, Properties, Brush Studio and 3D/2D viewports.
+- View menu provides show/hide per panel, restore default workspace and manual save; user-specific workspace state is automatically written via JSON and loaded on launch.
+- Editor settings kept separate from `.kalium` project files; workspace layout tests and a dedicated layout architecture note.
+- Tuned the dark desktop palette and blue selection highlights toward the supplied reference. No generated or modified image is used in the application.
+
+### Deliberate limitations
+- Source cannot be claimed compilable or visually pixel-perfect until tested using Rust/Cargo and real desktop graphics backends.
+- Assets tab contains only implemented Kalium brush presets and imports; multi-texture sets and Adobe formats remain unimplemented.
+- The GPU brush is still an opt-in CLI experiment; neither real-time GPU painting nor advanced PBR baking was introduced in this iteration.
+
 ## v0.2.0-alpha.2 — 2026-10-10
 
 Third source iteration by **DrapNard**. Rust toolchain and GPU not available in this environment; build and functional results remain unverified.
