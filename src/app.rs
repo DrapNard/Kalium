@@ -668,15 +668,34 @@ impl KaliumApp {
         ui.label(egui::RichText::new("Smart Materials and node generators: pending implementation.").weak().small());
     }
 
+    /// Persist the docking layout only when it changes.
+    ///
+    /// Keep this deliberately flat: it is called from the main UI loop, and
+    /// a failure to write user preferences must never interrupt painting.
     fn autosave_workspace(&mut self) {
-        if self.last_layout_save.elapsed()<Duration::from_secs(2) {return;}
-        self.last_layout_save=Instant::now();
-        if let Ok(layout)=layout::encode_workspace(&self.dock) {
-            if layout!=self.saved_layout {
-                match layout::persist_workspace(&self.dock) {
-                    Ok(_)=>self.saved_layout=layout,
-                    Err(err)=>self.status=format!("Workspace was not saved: {err}"),
-                }
+        if self.last_layout_save.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.last_layout_save = Instant::now();
+
+        let encoded = match layout::encode_workspace(&self.dock) {
+            Ok(encoded) => encoded,
+            Err(err) => {
+                self.status = format!("Workspace could not be encoded: {err}");
+                return;
+            }
+        };
+
+        if encoded == self.saved_layout {
+            return;
+        }
+
+        match layout::persist_workspace(&self.dock) {
+            Ok(_) => {
+                self.saved_layout = encoded;
+            }
+            Err(err) => {
+                self.status = format!("Workspace was not saved: {err}");
             }
         }
     }

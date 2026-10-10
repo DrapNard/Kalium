@@ -1,4 +1,4 @@
-# Build and verification status — v0.2.0-alpha.5
+# Build and verification status — v0.2.0-alpha.5.1
 
 Maintainer / version identity: **DrapNard**.
 
@@ -34,3 +34,10 @@ cargo run --features gpu-experimental -- gpu-stamp input.png output.png 0.5 0.5 
 ```
 
 After these, manual testing is needed in the native GUI for painting, imported UV layouts, flood-fill, masks, undo and redo. Compare GPU compute brush results with the CPU brush at multiple opacities and hard/soft edges. Compatibility with `.spp` is **not** implemented.
+
+## alpha.5.1 hotfix verification
+
+- The autosave function was rewritten as a flat, balanced function with explicit early returns.
+- The package creation process checks the source archive, Git bundle, hotfix diff and release metadata.
+- This environment does **not** provide `cargo` or `rustc`: no successful compile or unit test is asserted for alpha.5.1.
+- Upgrade instructions explicitly protect changes in a pre-existing clone and warn against reapplying stale `app.rs`.

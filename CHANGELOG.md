@@ -2,6 +2,16 @@
 
 Kalium author and release identity: **DrapNard** (https://github.com/DrapNard). All changes distributed as AGPL-3.0-only.
 
+## v0.2.0-alpha.5.1 — 2026-10-11
+
+**Hotfix under the DrapNard release identity.** The user reported a Rust parser error (`unclosed delimiter`) around `KaliumApp::autosave_workspace()` after updating to alpha.5. The original alpha.5 bundle does contain a closed function, so the reported error could also be caused by older local changes or an applied stash. This hotfix makes the function explicit and flatter, eliminating deeply nested closing delimiters while preserving workspace saving behavior. Failure to encode the workspace now also reports an error in the status bar.
+
+- Refactor `autosave_workspace()` to early returns with balanced, plainly formatted control blocks.
+- Preserve the existing user layout and modified/unsaved project state on filesystem errors.
+- Keep the v2 `.kalium` document manifest and all alpha.5 functionality unchanged.
+- Document a **stash → fast-forward → test** upgrade path for clones with local edits. Do **not** reapply an old stash containing a broken `src/app.rs` over this version.
+- Source/bundle packaging checks are performed, but Rust/Cargo are not installed in this delivery environment; compile/test confirmation is still required on the user's Arch machine.
+
 ## v0.2.0-alpha.5 — 2026-10-10
 
 DrapNard source update, based on the 28/29 successful local unit tests reported from v0.2.0-alpha.4. **This update has not been compiled in the packaging environment.**
