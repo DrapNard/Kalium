@@ -1,4 +1,4 @@
-# Build and verification status — v0.2.0-alpha.3
+# Build and verification status — v0.2.0-alpha.4
 
 Maintainer / version identity: **DrapNard**.
 
@@ -6,7 +6,7 @@ This source iteration was prepared without installed `rustc`/`cargo` and without
 
 ## Checks performed for the downloadable package
 
-- [x] `Cargo.toml` parses as TOML and declares version `0.2.0-alpha.2`, AGPL-3.0-only, DrapNard and an opt-in compute feature.
+- [x] `Cargo.toml` parses as TOML and declares version `0.2.0-alpha.4`, AGPL-3.0-only, DrapNard and an opt-in compute feature.
 - [x] Example `.kalium` ZIP CRC check and manifest header inspection.
 - [x] Example `.kbrush` JSON format/version parsing.
 - [x] Source ZIP integrity check (`ZipFile.testzip`) and extracted source layout.
@@ -14,6 +14,9 @@ This source iteration was prepared without installed `rustc`/`cargo` and without
 - [x] `git diff --check` before commit.
 - [x] Static delimiter inspection on the edited Rust sources. This is **not** a Rust parse or compilation test.
 - [x] Workspace source contains independent 3D/UV editors, `egui_dock` dependency pinned to the egui 0.31-compatible version, eight closable panels and JSON workspace persistence.
+- [x] Source assertions for reported float literal widths and the must-use Texture Set row warning.
+- [x] The new layer duplication, mask editing and framebuffer size tests exist as Rust unit tests.
+- [ ] **Rust compilation / unit tests:** not run; compiler not present.
 - [ ] GUI opened to verify panel placement / dragging. Not available here.
 
 ## Checks still required on a host with Rust and a GPU

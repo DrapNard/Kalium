@@ -2,6 +2,29 @@
 
 Kalium author and release identity: **DrapNard** (https://github.com/DrapNard). All changes distributed as AGPL-3.0-only.
 
+## v0.2.0-alpha.4 — 2026-10-10
+
+DrapNard source release. Substance Painter UI parity is the long-term design target, not an achieved feature claim. Changes are written in real Rust code; **compilation and GUI behavior must still be validated on a Rust-equipped machine**.
+
+### Added and improved
+- Narrower Assets strip, wider 3D/2D workspace and right-side Properties stack in the default dock layout; saved user layouts are kept unchanged until **View → Restore default workspace**.
+- Vertical, hideable painting tool shelf with Brush, Eraser, Eyedropper, Flood Fill and black/white mask modes.
+- Paint shortcuts B/E/I/G (disabled while a text control owns keyboard focus).
+- Deep layer duplication with fresh stable IDs, editable copied masks and all PBR channels; add/delete/reorder commands accessible in Layer menu and Layers pane.
+- Active-channel clear and layer-mask invert/reset using the existing sparse Undo/Redo snapshots; panel actions and menu commands operate on the actual editable document.
+- Per-layer indicators for populated channels and modified masks; active channel selector beside layer controls.
+- Responsive 3D framebuffer resizing when docking or adjusting the panel split, without discarding the orbit camera; pointer UV hit buffer follows the render dimensions.
+- Non-destructive cursor-radius overlay on painting canvases; project exports are unchanged.
+- Regression tests for duplicated layer independence, mask inversion and viewport resizing.
+
+### Warning fixes
+- Explicit `f32` sizes for the two reported `egui::Stroke::new` warnings.
+- Explicitly discard the `Ui::selectable_label` response in the currently single-set Texture Set pane.
+- Annotated the intentionally retained public `Brush::stamp`/`stroke` APIs to suppress dead-code warnings until plug-in consumers exist.
+
+### Still missing
+- More than one Texture Set, real-time GPU 3D rasterization and painting, UDIMs, advanced material/fill layers, baking, proprietary `.spp`/`.sppr`/`.spsm` round-trips and `.sbsar` execution. The docking layout does not imply these are implemented.
+
 ## v0.2.0-alpha.3 — 2026-10-10
 
 UI/workspace iteration by **DrapNard**. Source-only update: build and interactive execution were **not verified**, since Rust/Cargo are absent from the available environment.

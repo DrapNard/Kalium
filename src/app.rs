@@ -12,7 +12,9 @@ use std::path::PathBuf;
 #[derive(Clone,Copy,PartialEq,Eq)]
 enum Canvas {Model,UV}
 #[derive(Clone,Copy)]
-enum Action {New,Open,Save,SaveAs,ImportMesh,ImportTexture,Export,InspectSpp,LoadBrush,SaveBrush,Fill}
+enum Action {New,Open,Save,SaveAs,ImportMesh,ImportTexture,Export,InspectSpp,LoadBrush,SaveBrush,Fill,ClearChannel,InvertMask,ResetMask}
+#[derive(Clone,Copy)]
+enum LayerCommand {Add,Duplicate,Remove,Up,Down}
 struct PendingStroke {layer_id:u32,channel:Channel,mask:bool,before:Vec<u8>}
 
 pub struct KaliumApp {
@@ -39,6 +41,7 @@ pub struct KaliumApp {
     last_layout_save:Instant,
     saved_layout:Vec<u8>,
     asset_search:String,
+    show_tool_shelf:bool,
 }
 
 impl KaliumApp {
@@ -61,7 +64,7 @@ impl KaliumApp {
             file_path:None,unsaved:false,
             status:"Ready • Left drag to paint • Right drag to orbit • Scroll to zoom".into(),
             dock:layout::load_workspace(),last_layout_save:Instant::now(),
-            saved_layout:Vec::new(),asset_search:String::new(),
+            saved_layout:Vec::new(),asset_search:String::new(),show_tool_shelf:true,
         }
     }
 
@@ -191,6 +194,39 @@ impl KaliumApp {
                     Ok(Some(if changed {"Filled active layer channel or mask".into()}
                         else {"Nothing to fill (already identical)".into()}))
                 }
+                Action::ClearChannel=>{
+                    self.finish_stroke();
+                    let mode=BrushMode::Paint;
+                    let before=History::capture(&mut self.doc,self.channel,mode);
+                    let layer_id=self.doc.selected_layer().id;
+                    let mut brush=self.brush.clone();
+                    brush.mode=BrushMode::Erase;
+                    if ops::fill_selected(&mut self.doc,self.channel,&brush) {
+                        let after=History::capture(&mut self.doc,self.channel,mode);
+                        self.history.commit(Snapshot {layer_id,channel:self.channel,mask:false,before,after});
+                        self.change();
+                    }
+                    Ok(Some(format!("Cleared {} on selected layer",self.channel.label())))
+                }
+                Action::InvertMask|Action::ResetMask=>{
+                    self.finish_stroke();
+                    let mode=BrushMode::MaskWhite;
+                    let before=History::capture(&mut self.doc,self.channel,mode);
+                    let layer_id=self.doc.selected_layer().id;
+                    let changed=if matches!(action,Action::InvertMask) {
+                        self.doc.invert_selected_mask()
+                    } else {
+                        let mut brush=self.brush.clone();
+                        brush.mode=BrushMode::MaskWhite;
+                        ops::fill_selected(&mut self.doc,self.channel,&brush)
+                    };
+                    if changed {
+                        let after=History::capture(&mut self.doc,self.channel,mode);
+                        self.history.commit(Snapshot {layer_id,channel:self.channel,mask:true,before,after});
+                        self.change();
+                    }
+                    Ok(Some(if matches!(action,Action::InvertMask) {"Inverted selected layer mask".into()} else {"Reset layer mask to white".into()}))
+                }
                 Action::Export=>{
                     let Some(dir)=rfd::FileDialog::new().pick_folder() else {return Ok(None)};
                     let n=export::export_textures(&self.doc,&dir)?;
@@ -225,6 +261,7 @@ impl KaliumApp {
                         ("Load brush preset (.kbrush)…",Action::LoadBrush),
                         ("Save brush preset (.kbrush)…",Action::SaveBrush),
                         ("Export PBR textures…",Action::Export),
+                        ("Clear active channel",Action::ClearChannel),
                         ("Inspect SPP signature (experimental)…",Action::InspectSpp),
                     ] {
                         if ui.button(label).clicked(){action=Some(a);ui.close_menu();}
@@ -244,6 +281,7 @@ impl KaliumApp {
                         ui.close_menu();
                     }
                     ui.separator();
+                    ui.checkbox(&mut self.show_tool_shelf,"Show tool shelf");
                     ui.label("Show / hide panels");
                     for pane in Pane::ALL {
                         let mut visible=self.dock.find_tab(&pane).is_some();
@@ -256,6 +294,15 @@ impl KaliumApp {
                 ui.separator();
                 if ui.button("Undo").clicked(){if self.history.undo(&mut self.doc){self.change();}}
                 if ui.button("Redo").clicked(){if self.history.redo(&mut self.doc){self.change();}}
+                ui.menu_button("Layer",|ui|{
+                    if ui.button("Add paint layer").clicked() {self.layer_command(LayerCommand::Add);ui.close_menu();}
+                    if ui.button("Duplicate selected layer").clicked() {self.layer_command(LayerCommand::Duplicate);ui.close_menu();}
+                    if ui.button("Remove selected layer").clicked() {self.layer_command(LayerCommand::Remove);ui.close_menu();}
+                    ui.separator();
+                    if ui.button("Invert mask").clicked() {action=Some(Action::InvertMask);ui.close_menu();}
+                    if ui.button("Reset mask").clicked() {action=Some(Action::ResetMask);ui.close_menu();}
+                    if ui.button("Clear active channel").clicked() {action=Some(Action::ClearChannel);ui.close_menu();}
+                });
                 ui.separator();
                 ui.label(egui::RichText::new("AGPLv3 • Offline").small().weak());
             });
@@ -265,7 +312,7 @@ impl KaliumApp {
                 for (label,mode) in [("Brush",BrushMode::Paint),("Eraser",BrushMode::Erase),
                     ("Sample",BrushMode::Sample),("Fill",BrushMode::Bucket),
                     ("Mask +",BrushMode::MaskWhite),("Mask −",BrushMode::MaskBlack)] {
-                    if ui.selectable_label(self.brush.mode==mode,label).clicked() {self.brush.mode=mode;}
+                    if ui.selectable_label(self.brush.mode==mode,label).clicked() {self.finish_stroke();self.brush.mode=mode;}
                 }
                 ui.separator();
                 ui.label(format!("{}  |  {} px",self.channel.label(),self.brush.radius));
@@ -287,6 +334,41 @@ impl KaliumApp {
         });
         if undo {self.finish_stroke();if self.history.undo(&mut self.doc) {self.change();}}
         if redo {self.finish_stroke();if self.history.redo(&mut self.doc) {self.change();}}
+        // Painting shortcuts do not steal keystrokes while editing text in panel controls.
+        if !ctx.wants_keyboard_input() {
+            let shortcut=ctx.input(|i|{
+                if i.key_pressed(egui::Key::B) {Some(BrushMode::Paint)}
+                else if i.key_pressed(egui::Key::E) {Some(BrushMode::Erase)}
+                else if i.key_pressed(egui::Key::I) {Some(BrushMode::Sample)}
+                else if i.key_pressed(egui::Key::G) {Some(BrushMode::Bucket)}
+                else {None}
+            });
+            if let Some(mode)=shortcut {self.finish_stroke();self.brush.mode=mode;}
+        }
+    }
+    fn tool_shelf(&mut self,ctx:&egui::Context) {
+        if !self.show_tool_shelf {return;}
+        egui::SidePanel::left("kalium-tool-shelf")
+            .exact_width(48.0)
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(3,5)))
+            .show(ctx,|ui| {
+                ui.vertical_centered(|ui| {
+                    for (icon,mode,help) in [
+                        ("✎",BrushMode::Paint,"Paint (B)"),
+                        ("⌫",BrushMode::Erase,"Eraser (E)"),
+                        ("◎",BrushMode::Sample,"Sample (I)"),
+                        ("▧",BrushMode::Bucket,"Connected fill (G)"),
+                        ("◐",BrushMode::MaskWhite,"Paint mask white"),
+                        ("◑",BrushMode::MaskBlack,"Paint mask black"),
+                    ] {
+                        if ui.add_sized([37.0,34.0],egui::Button::new(icon)
+                            .selected(self.brush.mode==mode)).on_hover_text(help).clicked() {
+                            self.finish_stroke();
+                            self.brush.mode=mode;
+                        }
+                    }
+                });
+            });
     }
     fn tools(&mut self,ui:&mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui,|ui|{
@@ -356,25 +438,79 @@ impl KaliumApp {
             ui.label("Mouse wheel zooms. Ctrl+S saves. Ctrl+Z / Ctrl+Y undo or redo strokes.");
         });
     }
+    fn layer_command(&mut self,command:LayerCommand) {
+        self.finish_stroke();
+        let changed=match command {
+            LayerCommand::Add=>match self.doc.add_layer() {
+                Ok(())=>true,Err(err)=>{self.status=err.to_string();false}
+            },
+            LayerCommand::Duplicate=>match self.doc.duplicate_selected() {
+                Ok(())=>true,Err(err)=>{self.status=err.to_string();false}
+            },
+            LayerCommand::Remove=>{
+                if self.doc.layers.len()>1 {self.doc.remove_layer();true} else {false}
+            },
+            LayerCommand::Up=>{
+                let old=self.doc.selected;
+                self.doc.move_selected(true);
+                self.doc.selected!=old
+            },
+            LayerCommand::Down=>{
+                let old=self.doc.selected;
+                self.doc.move_selected(false);
+                self.doc.selected!=old
+            },
+        };
+        if changed {self.history.clear();self.change();}
+    }
     fn layers(&mut self,ui:&mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui,|ui|{
-            ui.heading("Layer Stack");
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("LAYERS").strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                    ui.label(egui::RichText::new(format!("{} layers",self.doc.layers.len())).small().weak());
+                });
+            });
             let mut changed=false;
-            ui.horizontal(|ui|{
-                if ui.button("+ Add").clicked() {
-                    match self.doc.add_layer() {Ok(())=>changed=true,Err(err)=>self.status=err.to_string()}
+            ui.horizontal_wrapped(|ui|{
+                for (label,help,command) in [
+                    ("+","Add paint layer",LayerCommand::Add),
+                    ("⧉","Duplicate selected layer",LayerCommand::Duplicate),
+                    ("−","Delete layer",LayerCommand::Remove),
+                    ("↑","Move up",LayerCommand::Up),
+                    ("↓","Move down",LayerCommand::Down),
+                ] {
+                    if ui.small_button(label).on_hover_text(help).clicked() {self.layer_command(command);}
                 }
-                if ui.button("−").clicked() {self.doc.remove_layer();changed=true;}
-                if ui.button("↑").clicked(){self.doc.move_selected(true);changed=true;}
-                if ui.button("↓").clicked(){self.doc.move_selected(false);changed=true;}
+                if ui.small_button("◐").on_hover_text("Invert selected mask").clicked() {
+                    self.perform(Action::InvertMask);
+                }
             });
             ui.separator();
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("layers-channel")
+                    .selected_text(self.channel.label()).show_ui(ui,|ui| {
+                        for channel in Channel::ALL {
+                            if ui.selectable_value(&mut self.channel,channel,channel.label()).changed() {
+                                self.uv_texture=None;
+                                if self.solo_channel {self.model_dirty=true;}
+                            }
+                        }
+                    });
+            });
             egui::ScrollArea::vertical().max_height(360.0).show(ui,|ui|{
                 for index in (0..self.doc.layers.len()).rev() {
                     let layer=&mut self.doc.layers[index];
-                    ui.horizontal(|ui|{
-                        if ui.checkbox(&mut layer.visible,"").changed(){changed=true;}
-                        if ui.selectable_label(self.doc.selected==index,&layer.name).clicked(){self.doc.selected=index;}
+                    let is_selected=self.doc.selected==index;
+                    let title=if layer.pixels.contains_key(&self.channel) {
+                        format!("▣ {}",layer.name)
+                    } else {format!("□ {}",layer.name)};
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut layer.visible,"").on_hover_text("Toggle visibility").changed() {changed=true;}
+                        if ui.selectable_label(is_selected,title).clicked() {self.doc.selected=index;}
+                        if !layer.mask.pixels().all(|p|p.0[0]==255) {
+                            ui.label(egui::RichText::new("◐").small()).on_hover_text("Masked layer");
+                        }
                     });
                 }
             });
@@ -395,6 +531,11 @@ impl KaliumApp {
             for c in Channel::ALL {
                 if layer.pixels.contains_key(&c) {ui.label(format!("• {}",c.label()));}
             }
+            ui.horizontal_wrapped(|ui| {
+                if ui.small_button("Invert mask").clicked(){self.perform(Action::InvertMask);}
+                if ui.small_button("Reset mask").clicked(){self.perform(Action::ResetMask);}
+                if ui.small_button("Clear channel").clicked(){self.perform(Action::ClearChannel);}
+            });
             ui.add_space(10.0);
             ui.label(egui::RichText::new("Layer masks are editable with Mask + and Mask − brush modes.").small().weak());
             if changed {self.history.clear();self.change();}
@@ -421,7 +562,7 @@ impl KaliumApp {
                     cols[index%2].vertical_centered(|ui| {
                         let (rect,clicked)=ui.allocate_exact_size(egui::vec2(76.0,72.0),egui::Sense::click());
                         ui.painter().circle_filled(rect.center(),26.0,swatch);
-                        ui.painter().circle_stroke(rect.center(),26.0,egui::Stroke::new(1.2,Color32::from_gray(204)));
+                        ui.painter().circle_stroke(rect.center(),26.0,egui::Stroke::new(1.2_f32,Color32::from_gray(204)));
                         if clicked.clicked() {
                             self.brush.radius=radius;
                             self.brush.opacity=opacity;
@@ -448,7 +589,8 @@ impl KaliumApp {
         });
         ui.separator();
         // V0.2: one texture set per document. Do not fabricate materials from a reference picture.
-        ui.selectable_label(true,format!("◉ Default  •  {}×{}",self.doc.size,self.doc.size));
+        let _=ui.selectable_label(true,format!("◉ Default  •  {}×{}",self.doc.size,self.doc.size))
+            .on_hover_text("Current texture set; multi-material support is not yet available");
         ui.label(egui::RichText::new(format!("Mesh: {}",self.doc.mesh.name)).weak().small());
         ui.add_space(8.0);
         ui.label(egui::RichText::new("Multiple material texture sets and per-set shaders: planned.").weak().small());
@@ -595,8 +737,20 @@ impl KaliumApp {
             });
             ui.separator();
             let available=ui.available_size();
-            let side=available.x.min(available.y).max(128.0).min(850.0);
-            let size=Vec2::splat(side);
+            let size=if canvas==Canvas::UV {
+                Vec2::splat(available.x.min(available.y).max(128.0).min(850.0))
+            } else {
+                egui::vec2(available.x.max(128.0).min(1100.0),
+                    available.y.max(128.0).min(900.0))
+            };
+            if canvas==Canvas::Model {
+                let desired=(size.x.round() as usize,size.y.round() as usize);
+                if (self.view.width,self.view.height)!=desired {
+                    self.view.resize(desired.0,desired.1);
+                    self.model_dirty=true;
+                    self.refresh_textures(&ctx);
+                }
+            }
             ui.vertical_centered(|ui|{
                 let texture=match canvas {
                     Canvas::Model=>self.model_texture.as_ref(),Canvas::UV=>self.uv_texture.as_ref(),
@@ -612,10 +766,19 @@ impl KaliumApp {
                         for i in 0..3 {
                             let a=uv[i];let b=uv[(i+1)%3];
                             painter.line_segment([
-                                egui::pos2(response.rect.left()+a[0]*side,response.rect.top()+a[1]*side),
-                                egui::pos2(response.rect.left()+b[0]*side,response.rect.top()+b[1]*side),
-                            ],egui::Stroke::new(0.65,Color32::from_rgba_unmultiplied(245,245,250,115)));
+                                egui::pos2(response.rect.left()+a[0]*size.x,response.rect.top()+a[1]*size.y),
+                                egui::pos2(response.rect.left()+b[0]*size.x,response.rect.top()+b[1]*size.y),
+                            ],egui::Stroke::new(0.65_f32,Color32::from_rgba_unmultiplied(245,245,250,115)));
                         }
+                    }
+                }
+                // The cursor overlay is a non-destructive UI guide, not part of the exported texture.
+                if response.hovered() && !matches!(self.brush.mode,BrushMode::Sample|BrushMode::Bucket) {
+                    if let Some(pointer)=ctx.input(|i|i.pointer.hover_pos()) {
+                        let radius=self.brush.radius as f32 *
+                            response.rect.width() / self.doc.size as f32;
+                        ui.painter().circle_stroke(pointer,radius.max(1.0),
+                            egui::Stroke::new(1.0_f32,Color32::from_gray(235)));
                     }
                 }
                 if canvas==Canvas::Model && response.hovered() {
@@ -658,6 +821,7 @@ impl eframe::App for KaliumApp {
         let down=ctx.input(|i|i.pointer.primary_down());
         if !down {self.finish_stroke();}
         self.menu(ctx);
+        self.tool_shelf(ctx);
         egui::TopBottomPanel::bottom("status").show(ctx,|ui|{
             ui.horizontal_wrapped(|ui|{
                 ui.label(egui::RichText::new(format!("KALIUM {} α · DrapNard",env!("CARGO_PKG_VERSION"))).color(Color32::from_rgb(156,201,248)));

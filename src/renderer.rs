@@ -40,6 +40,18 @@ impl Viewport {
         Self {width,height,rgba:vec![0;width*height*4],uv:vec![None;width*height],
             yaw:0.42,pitch:0.25,distance:4.2}
     }
+    /// Resize the software framebuffer without resetting the orbit camera.
+    /// Keeps hit testing aligned with the displayed 3D editor after docking.
+    pub fn resize(&mut self,width:usize,height:usize) {
+        let width=width.clamp(128,1100);
+        let height=height.clamp(128,900);
+        if self.width==width && self.height==height {return;}
+        self.width=width;
+        self.height=height;
+        self.rgba.resize(width*height*4,0);
+        self.uv.resize(width*height,None);
+        self.uv.fill(None);
+    }
     pub fn orbit(&mut self,dx:f32,dy:f32) {
         self.yaw += dx*0.012;
         self.pitch=(self.pitch-dy*0.012).clamp(-1.45,1.45);
@@ -154,6 +166,19 @@ impl Viewport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resizing_preserves_camera_and_pick_buffer_dimensions() {
+        let mut view=Viewport::new(200,200);
+        view.orbit(10.0,-5.0);
+        let yaw=view.yaw;
+        let pitch=view.pitch;
+        view.resize(480,320);
+        assert_eq!((view.width,view.height),(480,320));
+        assert_eq!(view.yaw,yaw);
+        assert_eq!(view.pitch,pitch);
+        assert!(view.pick(481,200).is_none());
+        assert_eq!(view.rgba.len(),480*320*4);
+    }
     #[test]
     fn rendered_cube_has_hit_pixels() {
         let doc=Document::new(64);

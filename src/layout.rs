@@ -28,9 +28,9 @@ pub fn default_workspace()->DockState<Pane> {
     use Pane::*;
     let mut dock=DockState::new(vec![Viewport3D]);
     let tree=dock.main_surface_mut();
-    let [center,_left]=tree.split_left(NodeIndex::root(),0.80,vec![Assets,BrushStudio]);
+    let [center,_left]=tree.split_left(NodeIndex::root(),0.86,vec![Assets,BrushStudio]);
     // Right column is split from the whole workspace, not from one viewport.
-    let [center,right]=tree.split_right(center,0.77,vec![TextureSets]);
+    let [center,right]=tree.split_right(center,0.79,vec![TextureSets]);
     // 3D and UV editors coexist at the center.
     let [_model,_uv]=tree.split_right(center,0.50,vec![Viewport2D]);
     // Right column: texture sets, layers and editable fill/brush properties.

@@ -47,6 +47,7 @@ pub enum BlendMode { Normal, Multiply, Add }
 
 impl BlendMode { pub const ALL: [Self;3] = [Self::Normal,Self::Multiply,Self::Add]; }
 
+#[derive(Clone)]
 pub struct Layer {
     pub id: u32,
     pub name: String,
@@ -92,6 +93,40 @@ impl Document {
         self.selected+=1;
         self.layers.insert(self.selected,layer);
         Ok(())
+    }
+    /// Duplicate the selected layer with all of its PBR channels and its mask.
+    /// The copy receives a fresh ID, so edits/history cannot collide.
+    pub fn duplicate_selected(&mut self)->Result<()> {
+        if self.layers.len()>=MAX_LAYERS {bail!("Maximum number of layers reached");}
+        let id=self.next_layer_id;
+        self.next_layer_id=self.next_layer_id.checked_add(1)
+            .ok_or_else(||anyhow::anyhow!("Layer ID counter exhausted"))?;
+        // Avoid allocating a full second copy of a multi-channel 4K layer
+        // when it would exceed the same 512-MiB decoded document budget
+        // enforced by the native .kalium importer.
+        let used=self.layers.iter().fold(0u64,|sum,layer| {
+            sum.saturating_add((layer.mask.len() as u64).saturating_add(
+                layer.pixels.values().map(|image|image.len() as u64).sum::<u64>()))
+        });
+        let selected=self.selected_layer();
+        let extra=(selected.mask.len() as u64).saturating_add(
+            selected.pixels.values().map(|image|image.len() as u64).sum::<u64>());
+        if used.saturating_add(extra)>512*1024*1024 {
+            bail!("Duplicating this layer would exceed the 512-MiB texture budget");
+        }
+        let mut copy=selected.clone();
+        copy.id=id;
+        copy.name=format!("{} copy",copy.name);
+        self.selected+=1;
+        self.layers.insert(self.selected,copy);
+        Ok(())
+    }
+    /// Inversion is an edit on a persistent grayscale layer mask.
+    pub fn invert_selected_mask(&mut self)->bool {
+        let mask=&mut self.selected_layer_mut().mask;
+        let dirty=!mask.is_empty();
+        for pixel in mask.pixels_mut() {pixel.0[0]=255-pixel.0[0];}
+        dirty
     }
     pub fn remove_layer(&mut self) {
         if self.layers.len()>1 {self.layers.remove(self.selected);self.selected=self.selected.min(self.layers.len()-1);}
@@ -167,6 +202,24 @@ mod tests {
     fn blank_layers_preserve_background() {
         let doc=Document::new(64);
         assert_eq!(doc.composite(Channel::BaseColor).get_pixel(10,10).0,Channel::BaseColor.background());
+    }
+    #[test]
+    fn duplicate_preserves_channels_and_mask_but_creates_new_id() {
+        let mut doc=Document::new(64);
+        doc.selected_layer_mut().pixels_mut(Channel::Metallic,64)
+            .put_pixel(2,3,Rgba([123,123,123,255]));
+        doc.selected_layer_mut().mask.put_pixel(2,3,Luma([45]));
+        doc.duplicate_selected().unwrap();
+        assert_eq!(doc.layers.len(),2);
+        assert_eq!(doc.selected,1);
+        assert_ne!(doc.layers[0].id,doc.layers[1].id);
+        assert_eq!(doc.layers[1].mask.get_pixel(2,3).0,[45]);
+        assert_eq!(doc.layers[1].pixels[&Channel::Metallic].get_pixel(2,3).0,[123,123,123,255]);
+        doc.layers[1].pixels_mut(Channel::Metallic,64).put_pixel(2,3,Rgba([1,1,1,255]));
+        assert_eq!(doc.layers[0].pixels[&Channel::Metallic].get_pixel(2,3).0,[123,123,123,255]);
+        doc.invert_selected_mask();
+        assert_eq!(doc.layers[1].mask.get_pixel(2,3).0,[210]);
+        doc.validate().unwrap();
     }
     #[test]
     fn painted_layer_blends_with_background() {

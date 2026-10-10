@@ -42,6 +42,7 @@ impl Brush {
         if !self.spacing.is_finite() || !(0.1..=4.0).contains(&self.spacing) { bail!("Invalid spacing"); }
         Ok(())
     }
+    #[allow(dead_code)] // Public API for future brush plugins; GUI uses the UV-aware variant.
     pub fn stamp(&self,doc:&mut Document,channel:Channel,uv:[f32;2]) {
         self.stamp_masked(doc,channel,uv,None);
     }
@@ -110,6 +111,7 @@ impl Brush {
         }
     }
 
+    #[allow(dead_code)] // Public API for callers without an atlas coverage mask.
     pub fn stroke(&self,doc:&mut Document,channel:Channel,from:Option<[f32;2]>,to:[f32;2]) {
         self.stroke_masked(doc,channel,from,to,None);
     }
