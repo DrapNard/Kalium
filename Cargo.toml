@@ -1,8 +1,8 @@
 [package]
 name = "kalium"
-version = "0.1.0"
+version = "0.2.0-alpha.1"
 edition = "2021"
-authors = ["DrapNard and Kalium contributors"]
+authors = ["DrapNard", "Kalium contributors"]
 license = "AGPL-3.0-only"
 description = "Open-source, artist-first 3D texture painting studio"
 

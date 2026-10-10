@@ -1,0 +1,15 @@
+{
+  "format": "Kalium Brush",
+  "version": 1,
+  "name": "Hard Detail",
+  "brush": {
+    "radius": 8,
+    "opacity": 1.0,
+    "hardness": 1.0,
+    "spacing": 0.10,
+    "mode": "Paint",
+    "color": [255, 255, 255, 255],
+    "grayscale": 255,
+    "mirror_u": false
+  }
+}

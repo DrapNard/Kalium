@@ -1,0 +1,28 @@
+name: Kalium Rust CI
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux windowing build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libasound2-dev libudev-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Compile all targets
+        run: cargo check --all-targets
+      - name: Run unit tests
+        run: cargo test --all-targets
+      - name: CLI smoke test
+        run: |
+          cargo run -- --version
+          cargo run -- validate examples/Kalium-Demo.kalium
+          cargo run -- preview examples/Kalium-Demo.kalium ./kalium-preview.png
+          cargo run -- brush-inspect examples/Soft-Painter.kbrush

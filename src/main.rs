@@ -1,6 +1,10 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Keep a console attached even for release builds: Kalium includes a headless CLI.
+// A GUI-only Windows launcher can be added as a separate binary later.
 
 mod app;
+mod brush_preset;
+mod cli;
+mod ops;
 mod document;
 mod export;
 mod history;
@@ -13,6 +17,8 @@ mod spp;
 use anyhow::Result;
 
 fn main() -> Result<()> {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if !arguments.is_empty() { return cli::run(&arguments); }
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Kalium • Artist-first 3D Painter")

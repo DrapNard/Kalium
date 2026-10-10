@@ -12,13 +12,18 @@ Welcome! The project is Rust-first: knowing Kalcite is **not** required. No new 
 6. Keep file decoders hardened against malformed data, huge allocation requests, invalid floats and unknown schema versions.
 7. Avoid new dependencies unless they materially simplify the problem. Explain their licenses.
 
+Project author: **DrapNard**. Credit additional contributors through Git history. Tag versions following [AUTHORS.md](AUTHORS.md).
+
 ## Structure
 
 - `src/mesh.rs` — OBJ/glTF/GLB import and normalized triangle mesh.
 - `src/document.rs` — multichannel non-destructive layers and blending.
 - `src/paint.rs` — brush engine.
+- `src/brush_preset.rs` — native human-readable `.kbrush` presets.
+- `src/ops.rs` — fill operations and editable PNG/JPEG layer import.
+- `src/cli.rs` — headless commands (no GUI launch).
+- `src/history.rs` — sparse bounded stroke/fill deltas.
 - `src/renderer.rs` — CPU reference renderer and GPU-uploadable preview; eventual wgpu native replacement.
-- `src/history.rs` — paint stroke undo/redo.
 - `src/project.rs` — editable native .kalium archives.
 - `src/export.rs` — PBR texture export packs.
 - `src/spp.rs` — **SPP identification only**, no structural parser.

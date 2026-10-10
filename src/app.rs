@@ -1,7 +1,7 @@
 use crate::{
     document::{BlendMode, Channel, Document},
     export,history::{History,Snapshot},mesh::Mesh,paint::{Brush,BrushMode},
-    project,renderer::{Material,Viewport},spp,
+    project,renderer::{Material,Viewport},spp,ops,brush_preset,
 };
 use eframe::egui::{self,Color32,ColorImage,TextureHandle,TextureOptions,Vec2};
 use std::path::PathBuf;
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 #[derive(Clone,Copy,PartialEq,Eq)]
 enum Canvas {Model,UV}
 #[derive(Clone,Copy)]
-enum Action {New,Open,Save,SaveAs,ImportMesh,Export,InspectSpp}
+enum Action {New,Open,Save,SaveAs,ImportMesh,ImportTexture,Export,InspectSpp,LoadBrush,SaveBrush,Fill}
 struct PendingStroke {layer_id:u32,channel:Channel,mask:bool,before:Vec<u8>}
 
 pub struct KaliumApp {
@@ -125,6 +125,46 @@ impl KaliumApp {
                     self.history.clear();self.change();
                     Ok(Some(format!("Imported {}",path.display())))
                 }
+                Action::ImportTexture=>{
+                    let Some(path)=rfd::FileDialog::new()
+                        .add_filter("Image texture", &["png","jpg","jpeg"]).pick_file() else {return Ok(None)};
+                    self.finish_stroke();
+                    ops::import_texture(&mut self.doc,self.channel,&path)?;
+                    self.history.clear();
+                    self.change();
+                    Ok(Some(format!("Imported texture {} as new {} layer",path.display(),self.channel.label())))
+                }
+                Action::LoadBrush=>{
+                    let Some(path)=rfd::FileDialog::new()
+                        .add_filter("Kalium brush preset", &["kbrush"]).pick_file() else {return Ok(None)};
+                    self.finish_stroke();
+                    let (name,brush)=brush_preset::load(&path)?;
+                    self.brush=brush;
+                    Ok(Some(format!("Loaded brush preset {name}")))
+                }
+                Action::SaveBrush=>{
+                    let Some(path)=rfd::FileDialog::new()
+                        .add_filter("Kalium brush preset", &["kbrush"])
+                        .set_file_name("MyBrush.kbrush").save_file() else {return Ok(None)};
+                    let name=path.file_stem().and_then(|s|s.to_str()).unwrap_or("MyBrush");
+                    brush_preset::save(&self.brush,name,&path)?;
+                    Ok(Some(format!("Saved brush preset {}",path.display())))
+                }
+                Action::Fill=>{
+                    self.finish_stroke();
+                    let mode=self.brush.mode;
+                    let mask=mode.is_mask();
+                    let before=History::capture(&mut self.doc,self.channel,mode);
+                    let layer_id=self.doc.selected_layer().id;
+                    let changed=ops::fill_selected(&mut self.doc,self.channel,&self.brush);
+                    if changed {
+                        let after=History::capture(&mut self.doc,self.channel,mode);
+                        self.history.commit(Snapshot {layer_id,channel:self.channel,mask,before,after});
+                        self.change();
+                    }
+                    Ok(Some(if changed {"Filled active layer channel or mask".into()}
+                        else {"Nothing to fill (already identical)".into()}))
+                }
                 Action::Export=>{
                     let Some(dir)=rfd::FileDialog::new().pick_folder() else {return Ok(None)};
                     let n=export::export_textures(&self.doc,&dir)?;
@@ -155,6 +195,9 @@ impl KaliumApp {
                         ("New",Action::New),("Open .kalium…",Action::Open),
                         ("Save",Action::Save),("Save As…",Action::SaveAs),
                         ("Import OBJ / glTF / GLB…",Action::ImportMesh),
+                        ("Import PNG / JPEG as layer…",Action::ImportTexture),
+                        ("Load brush preset (.kbrush)…",Action::LoadBrush),
+                        ("Save brush preset (.kbrush)…",Action::SaveBrush),
                         ("Export PBR textures…",Action::Export),
                         ("Inspect SPP signature (experimental)…",Action::InspectSpp),
                     ] {
@@ -220,6 +263,11 @@ impl KaliumApp {
                 ui.label(format!("{} intensity",self.channel.label()));
                 ui.add(egui::Slider::new(&mut self.brush.grayscale,0..=255));
             }
+            if ui.button("Fill selected channel / mask").clicked() {self.perform(Action::Fill);}
+            ui.horizontal(|ui| {
+                if ui.button("Load brush…").clicked() {self.perform(Action::LoadBrush);}
+                if ui.button("Save brush…").clicked() {self.perform(Action::SaveBrush);}
+            });
             ui.separator();
             ui.heading("Display");
             if ui.checkbox(&mut self.solo_channel,"Show selected channel in 3D").changed(){self.model_dirty=true;}
@@ -306,6 +354,17 @@ impl KaliumApp {
     }
     fn paint_uv(&mut self,uv:[f32;2]) {
         if uv.iter().any(|v|!v.is_finite() || *v < 0.0 || *v>1.0) {return;}
+        if self.brush.mode==BrushMode::Sample {
+            let Some(material)=self.material.as_ref() else {return;};
+            let image=material.image(self.channel);
+            let x=(uv[0]*(image.width()-1) as f32).round() as u32;
+            let y=(uv[1]*(image.height()-1) as f32).round() as u32;
+            let sampled=image.get_pixel(x,y).0;
+            if self.channel.is_color() {self.brush.color=sampled;}
+            else {self.brush.grayscale=sampled[0];}
+            self.status=format!("Sampled {} at ({x},{y})",self.channel.label());
+            return;
+        }
         self.begin_stroke();
         self.brush.stroke(&mut self.doc,self.channel,self.previous_uv,uv);
         self.previous_uv=Some(uv);
@@ -385,7 +444,7 @@ impl eframe::App for KaliumApp {
         self.menu(ctx);
         egui::TopBottomPanel::bottom("status").show(ctx,|ui|{
             ui.horizontal_wrapped(|ui|{
-                ui.label(egui::RichText::new("KALIUM 0.1 α").color(Color32::from_rgb(178,149,247)));
+                ui.label(egui::RichText::new(format!("KALIUM {} α · DrapNard",env!("CARGO_PKG_VERSION"))).color(Color32::from_rgb(178,149,247)));
                 ui.separator();
                 ui.label(&self.status);
                 if self.unsaved {ui.label(egui::RichText::new("● Unsaved").color(Color32::YELLOW));}

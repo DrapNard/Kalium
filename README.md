@@ -4,18 +4,23 @@
 
 Kalium is an independent texture-painting application aiming for interoperability with Adobe Substance 3D Painter and its asset ecosystem. Kalium is **not** an Adobe product and is not affiliated with Adobe.
 
-> **CURRENT STATUS: v0.1.0 ALPHA / INITIAL SOURCE RELEASE.** This repository is a substantial *first executable prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. This package was assembled in an environment without Rust installed, so it has **not been compiled or runtime-tested in this environment**. Tests are included to run on your own machine.
+> **CURRENT STATUS: v0.2.0-alpha.1 / DRAPNARD SOURCE RELEASE.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. This package was assembled in an environment without Rust installed, so it has **not been compiled or runtime-tested in this environment**. Tests are included to run on your own machine.
 
 ## Current features
 
 - Native Rust desktop application using **egui/eframe + wgpu** for rendering the UI.
+- **DrapNard** release identity; native format and project owner information documented in [AUTHORS.md](AUTHORS.md).
 - 3D textured-mesh viewport, orbit camera (right-drag), zoom (scroll), triangle-based UV hit-testing, painting on the actual mesh surface.
 - 2D UV painting workspace, optional UV wireframe overlay.
 - Model imports: Wavefront **OBJ**, **glTF**, **GLB** (triangulated primitives with first UV set; transforms baked into the in-memory mesh).
 - Eight PBR paint channels: **Base Color, Roughness, Metallic, Normal, Height, Emissive, Opacity, Ambient Occlusion**.
 - Paint, erase, and paint white/black on layer masks; opacity, brush radius, hardness, spacing, U-axis mirroring, connected brush strokes.
 - Editable layer stack with reordering, opacity, visibility, simple Normal/Multiply/Add blending and per-layer masks.
-- Undo/redo for paint strokes; keyboard shortcuts.
+- Sparse, bounded Undo/Redo for brush strokes and full-channel fills where within the 96 MiB history budget; keyboard shortcuts.
+- Fill/clear current channel or layer mask using the active tool mode, plus an eyedropper that samples the active channel in either 2D or 3D.
+- Import PNG/JPEG textures into a new editable layer on the selected PBR channel.
+- Native `.kbrush` JSON brush presets, with supplied Soft Painter and Hard Detail examples.
+- **Headless CLI** to inspect/validate/export/editable-project-preview without launching the graphical UI.
 - Native, documented, layered **`.kalium`** format, ZIP/JSON/PNG including embedded mesh and channels.
 - Export 8 individual PBR channel PNG maps, BaseColor+Alpha, packed ORM (Occlusion/Roughness/Metallic), and Unity metallic/smoothness texture.
 - Configurable texture size 256, 512, 1024, 2048, or 4096 (nearest-neighbor resampling).
@@ -48,6 +53,20 @@ cargo clippy --all-targets -- -D warnings
 
 This source release has *not* completed those checks in the generation environment. Run `cargo build` before relying on it for production work.
 
+### Headless CLI
+
+```bash
+cargo run -- --version
+cargo run -- inspect examples/Kalium-Demo.kalium
+cargo run -- validate examples/Kalium-Demo.kalium
+cargo run -- export examples/Kalium-Demo.kalium ./exported
+cargo run -- preview examples/Kalium-Demo.kalium ./preview.png
+cargo run -- brush-inspect examples/Soft-Painter.kbrush
+cargo run -- spp-inspect path/to/owned-project.spp
+```
+
+SPP inspection checks only for an HDF5 signature. **It cannot read or save Substance Painter layers.** CLI commands share the same Rust library code as the GUI (module-level, not yet a published stable SDK).
+
 ### Controls
 
 | Action | Input |
@@ -61,6 +80,9 @@ This source release has *not* completed those checks in the generation environme
 | Open project | Ctrl+O |
 | Undo / redo paint stroke | Ctrl+Z / Ctrl+Y |
 | Import OBJ / GLTF / GLB | File → Import |
+| Import editable PNG/JPEG layer | File → Import PNG/JPEG as layer |
+| Fill current channel / mask | Brush Studio → Fill selected channel / mask |
+| Load/save `.kbrush` preset | File → Load/Save brush preset |
 | Export textures | File → Export PBR textures |
 
 For a keyboard layout where Command is used, shortcuts adapt to the OS.
@@ -80,7 +102,14 @@ MyTexture.kalium
         └── ...                # Sparse per-channel layers
 ```
 
-It's intentionally independent of proprietary formats, editable, and inspectable without Kalium. See [docs/FORMAT.md](docs/FORMAT.md).
+It's intentionally independent of proprietary formats, editable, and inspectable without Kalium. See [docs/FORMAT.md](docs/FORMAT.md) and [docs/BRUSH_PRESETS.md](docs/BRUSH_PRESETS.md).
+
+### What v0.2 does **not** yet provide
+
+- Native GPU mesh rasterization, GPU brush projection/compute and physically accurate PBR.
+- `.spp`, `.sppr`, `.sbsar` editing or any Adobe format round-trip. The formats remain a clean-room interoperability research goal.
+- Baking, UDIM, material graphs, multi-texture-set workflows or professional-grade tablet pressure/tilt.
+- A completed local Rust build/test run. This sandbox cannot fetch Rust or compile dependencies. Please run `cargo test` and `cargo build` before using this on real work.
 
 ### Roadmap toward a complete Painter replacement
 
@@ -88,7 +117,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/COMPATIBILITY.md](docs/COMPATIB
 
 ## License
 
-Copyright © 2026 DrapNard and contributors. Source code is under **GNU Affero General Public License, version 3 only (AGPL-3.0-only)**. See [LICENSE](LICENSE). Third-party dependencies retain their own licenses. No Adobe branding, shader, resource or proprietary code is included.
+Copyright © 2026 **DrapNard** and contributors. Source code is under **GNU Affero General Public License, version 3 only (AGPL-3.0-only)**. See [LICENSE](LICENSE). Third-party dependencies retain their own licenses. No Adobe branding, shader, resource or proprietary code is included.
 
 Official direction: **tools for human artists, no generated imagery/materials in the official product**. See [PHILOSOPHY.md](PHILOSOPHY.md). This contributor policy applies to the project, not to what third parties can legally build under AGPLv3.
 

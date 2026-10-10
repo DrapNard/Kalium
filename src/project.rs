@@ -4,10 +4,11 @@ use crate::document::{BlendMode,Channel,Document,Layer,MAX_LAYERS,MAX_SIZE};
 use crate::mesh::Mesh;
 use anyhow::{anyhow,bail,Context,Result};
 use serde::{Deserialize,Serialize};
-use std::{fs::File,io::{Read,Write},path::Path};
+use std::{collections::HashSet,fs::File,io::{Read,Write},path::Path};
 use zip::{ZipArchive,ZipWriter,write::FileOptions,CompressionMethod};
 
 #[derive(Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Manifest {
     format:String,
     version:u32,
@@ -18,6 +19,7 @@ struct Manifest {
     layers:Vec<LayerManifest>,
 }
 #[derive(Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LayerManifest {
     id:u32,
     name:String,
@@ -81,11 +83,47 @@ fn read_entry(zip:&mut ZipArchive<File>,name:&str,max_bytes:u64)->Result<Vec<u8>
 pub fn load(path:&Path)->Result<Document> {
     let file=File::open(path)?;
     let mut zip=ZipArchive::new(file).context("Not a valid Kalium project ZIP")?;
+    // Reject unsupported additions rather than silently losing them on the next save.
+    if zip.len() > 1 + MAX_LAYERS * (Channel::ALL.len() + 2) {
+        bail!("Project contains too many ZIP entries");
+    }
     let manifest:Manifest=serde_json::from_slice(&read_entry(&mut zip,"manifest.json",48*1024*1024)?)?;
     if manifest.format!="Kalium Project" || manifest.version!=1 {bail!("Unsupported Kalium project version");}
     if !(64..=MAX_SIZE).contains(&manifest.size) {bail!("Invalid texture dimension");}
     if manifest.layers.is_empty()||manifest.layers.len()>MAX_LAYERS {bail!("Invalid layer count");}
     manifest.mesh.validate()?;
+    let mut valid_entries=HashSet::new();
+    valid_entries.insert("manifest.json".to_owned());
+    let mut seen_ids=HashSet::new();
+    let mut stored_bytes:u64=0;
+    for layer in &manifest.layers {
+        if !seen_ids.insert(layer.id) {bail!("Duplicate layer ID in manifest");}
+        valid_entries.insert(format!("layers/{}/mask.png",layer.id));
+        stored_bytes=stored_bytes.saturating_add((manifest.size as u64).pow(2));
+        let mut seen_channels=HashSet::new();
+        for &channel in &layer.channels {
+            if !seen_channels.insert(channel) {bail!("Duplicate channel in layer manifest");}
+            valid_entries.insert(format!("layers/{}/{}.png",layer.id,channel.filename()));
+            stored_bytes=stored_bytes.saturating_add((manifest.size as u64).pow(2)*4);
+        }
+    }
+    // Accounting for pixel buffers before allocating can avoid multi-gigabyte archives.
+    const MAX_DECODED_BYTES: u64=512*1024*1024;
+    if stored_bytes>MAX_DECODED_BYTES {bail!("Project exceeds decoded texture budget (512 MiB)");}
+    let mut seen_entries=HashSet::new();
+    for index in 0..zip.len() {
+        let entry=zip.by_index(index)?;
+        if !seen_entries.insert(entry.name().to_owned()) {bail!("Duplicate ZIP entry '{}'; refusing ambiguous input",entry.name());}
+        let name=entry.name();
+        if entry.is_dir() {
+            let trimmed=name.trim_end_matches('/');
+            if trimmed!="layers" && !seen_ids.iter().any(|id| trimmed==format!("layers/{id}")) {
+                bail!("Unexpected ZIP directory '{name}'");
+            }
+        } else if !valid_entries.contains(name) {
+            bail!("Unknown archive entry '{name}'; refusing lossy import");
+        }
+    }
     let mut doc=Document {
         mesh:manifest.mesh,size:manifest.size,
         layers:Vec::new(), selected:manifest.selected,next_layer_id:manifest.next_layer_id,

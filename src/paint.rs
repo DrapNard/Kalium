@@ -1,17 +1,20 @@
 use crate::document::{Channel,Document};
+use anyhow::{bail, Result};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone,Copy,PartialEq,Eq,Debug)]
-pub enum BrushMode { Paint, Erase, MaskWhite, MaskBlack }
+#[derive(Clone,Copy,PartialEq,Eq,Debug,Serialize,Deserialize)]
+pub enum BrushMode { Paint, Erase, MaskWhite, MaskBlack, Sample }
 
 impl BrushMode {
-    pub const ALL:[Self;4]=[Self::Paint,Self::Erase,Self::MaskWhite,Self::MaskBlack];
+    pub const ALL:[Self;5]=[Self::Paint,Self::Erase,Self::MaskWhite,Self::MaskBlack,Self::Sample];
     pub fn label(self)->&'static str {match self {
-        Self::Paint=>"Paint",Self::Erase=>"Erase",Self::MaskWhite=>"Mask +",Self::MaskBlack=>"Mask −",
+        Self::Paint=>"Paint",Self::Erase=>"Erase",Self::MaskWhite=>"Mask +",Self::MaskBlack=>"Mask −",Self::Sample=>"Eyedropper",
     }}
     pub fn is_mask(self)->bool {matches!(self,Self::MaskWhite|Self::MaskBlack)}
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Brush {
     pub radius:u32,
     pub opacity:f32,
@@ -29,7 +32,15 @@ impl Default for Brush {
 }
 
 impl Brush {
+    pub fn validate(&self) -> Result<()> {
+        if !(1..=4096).contains(&self.radius) { bail!("Brush radius must be 1..=4096"); }
+        if !self.opacity.is_finite() || !(0.0..=1.0).contains(&self.opacity) { bail!("Invalid opacity"); }
+        if !self.hardness.is_finite() || !(0.0..=1.0).contains(&self.hardness) { bail!("Invalid hardness"); }
+        if !self.spacing.is_finite() || !(0.1..=4.0).contains(&self.spacing) { bail!("Invalid spacing"); }
+        Ok(())
+    }
     pub fn stamp(&self,doc:&mut Document,channel:Channel,uv:[f32;2]) {
+        if self.mode==BrushMode::Sample {return;}
         if uv.iter().any(|v|!v.is_finite()) {return;}
         let size=doc.size;
         let radius=self.radius.max(1) as f32;

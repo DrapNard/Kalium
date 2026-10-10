@@ -1,6 +1,6 @@
 # Kalium roadmap — full Substance Painter-class target
 
-This document describes **future development goals**, not current features. `v0.1.0-alpha` is a playable source prototype, not a complete v1.0 product.
+This document describes **future development goals**, not current features. `v0.2.0-alpha.1` is a source prototype, not a complete v1.0 product.
 
 ## v0.1 — first editable foundation (this delivery)
 
@@ -16,6 +16,16 @@ This document describes **future development goals**, not current features. `v0.
 - [x] PNG and packed PBR exports
 - [x] Unit tests for basics (not run in this environment)
 - [ ] Confirm build on Linux/macOS/Windows and fix any integration issues
+
+## v0.2-alpha.1 — source iteration (2026-10-10)
+
+- [x] Native editable brush presets `.kbrush` (not `.sppr`)
+- [x] Texture PNG/JPEG imported as layer
+- [x] Fill/clear channel and mask with history
+- [x] Bounded sparse stroke/fill history (still captures dense temporary before/after buffers)
+- [x] Headless inspect/validate/export/preview/preset-inspect CLI
+- [x] Reject project archives with unrecognized schema additions and oversize resources
+- [ ] Confirm build and runtime tests on supported platforms
 
 ## v0.2 — fast production core
 

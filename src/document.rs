@@ -86,7 +86,8 @@ impl Document {
     pub fn add_layer(&mut self)->Result<()> {
         if self.layers.len()>=MAX_LAYERS {bail!("Maximum number of layers reached");}
         let id=self.next_layer_id;
-        self.next_layer_id=self.next_layer_id.saturating_add(1);
+        self.next_layer_id=self.next_layer_id.checked_add(1)
+            .ok_or_else(||anyhow::anyhow!("Layer ID counter exhausted"))?;
         let layer=Layer::new(id,format!("Paint Layer {}",id),self.size);
         self.selected+=1;
         self.layers.insert(self.selected,layer);
@@ -143,8 +144,12 @@ impl Document {
         if self.layers.is_empty() || self.layers.len()>MAX_LAYERS {bail!("Invalid layer count");}
         if self.selected>=self.layers.len() {bail!("Invalid selected layer");}
         let mut ids=HashSet::new();
+        if self.next_layer_id <= self.layers.iter().map(|l|l.id).max().unwrap_or(0) {
+            bail!("Next layer ID must exceed all existing IDs");
+        }
         for layer in &self.layers {
             if !ids.insert(layer.id) {bail!("Duplicate layer id");}
+            if layer.name.is_empty() || layer.name.len()>1024 {bail!("Invalid layer name length");}
             if layer.mask.dimensions()!=(self.size,self.size) {bail!("Invalid layer mask size");}
             if !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity) {bail!("Invalid layer opacity");}
             for image in layer.pixels.values() {
