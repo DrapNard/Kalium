@@ -1,14 +1,15 @@
 use crate::document::{Channel,Document};
+use crate::uv::UvCoverage;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone,Copy,PartialEq,Eq,Debug,Serialize,Deserialize)]
-pub enum BrushMode { Paint, Erase, MaskWhite, MaskBlack, Sample }
+pub enum BrushMode { Paint, Erase, MaskWhite, MaskBlack, Sample, Bucket }
 
 impl BrushMode {
-    pub const ALL:[Self;5]=[Self::Paint,Self::Erase,Self::MaskWhite,Self::MaskBlack,Self::Sample];
+    pub const ALL:[Self;6]=[Self::Paint,Self::Erase,Self::MaskWhite,Self::MaskBlack,Self::Sample,Self::Bucket];
     pub fn label(self)->&'static str {match self {
-        Self::Paint=>"Paint",Self::Erase=>"Erase",Self::MaskWhite=>"Mask +",Self::MaskBlack=>"Mask −",Self::Sample=>"Eyedropper",
+        Self::Paint=>"Paint",Self::Erase=>"Erase",Self::MaskWhite=>"Mask +",Self::MaskBlack=>"Mask −",Self::Sample=>"Eyedropper",Self::Bucket=>"Flood Fill",
     }}
     pub fn is_mask(self)->bool {matches!(self,Self::MaskWhite|Self::MaskBlack)}
 }
@@ -24,11 +25,13 @@ pub struct Brush {
     pub color:[u8;4],
     pub grayscale:u8,
     pub mirror_u:bool,
+    #[serde(default)]
+    pub tolerance:u8,
 }
 
 impl Default for Brush {
     fn default()->Self { Self {radius:22,opacity:0.85,hardness:0.65,spacing:0.25,
-        mode:BrushMode::Paint,color:[225,99,137,255],grayscale:175,mirror_u:false} }
+        mode:BrushMode::Paint,color:[225,99,137,255],grayscale:175,mirror_u:false,tolerance:0} }
 }
 
 impl Brush {
@@ -40,7 +43,10 @@ impl Brush {
         Ok(())
     }
     pub fn stamp(&self,doc:&mut Document,channel:Channel,uv:[f32;2]) {
-        if self.mode==BrushMode::Sample {return;}
+        self.stamp_masked(doc,channel,uv,None);
+    }
+    pub fn stamp_masked(&self,doc:&mut Document,channel:Channel,uv:[f32;2],coverage:Option<&UvCoverage>) {
+        if matches!(self.mode,BrushMode::Sample|BrushMode::Bucket) {return;}
         if uv.iter().any(|v|!v.is_finite()) {return;}
         let size=doc.size;
         let radius=self.radius.max(1) as f32;
@@ -57,6 +63,7 @@ impl Brush {
         if mode.is_mask() {
             for y in min_y..=max_y {
                 for x in min_x..=max_x {
+                    if coverage.is_some_and(|cover| !cover.contains(x,y)) {continue;}
                     let dx=x as f32-cx;let dy=y as f32-cy;
                     let distance=(dx*dx+dy*dy).sqrt()/radius;
                     if distance>1.0 {continue;}
@@ -76,6 +83,7 @@ impl Brush {
             let image=layer.pixels_mut(channel,size);
             for y in min_y..=max_y {
                 for x in min_x..=max_x {
+                    if coverage.is_some_and(|cover| !cover.contains(x,y)) {continue;}
                     let dx=x as f32-cx;let dy=y as f32-cy;
                     let distance=(dx*dx+dy*dy).sqrt()/radius;
                     if distance>1.0 {continue;}
@@ -103,9 +111,12 @@ impl Brush {
     }
 
     pub fn stroke(&self,doc:&mut Document,channel:Channel,from:Option<[f32;2]>,to:[f32;2]) {
+        self.stroke_masked(doc,channel,from,to,None);
+    }
+    pub fn stroke_masked(&self,doc:&mut Document,channel:Channel,from:Option<[f32;2]>,to:[f32;2],coverage:Option<&UvCoverage>) {
         let stamp=|uv:[f32;2],doc:&mut Document| {
-            self.stamp(doc,channel,uv);
-            if self.mirror_u {self.stamp(doc,channel,[1.0-uv[0],uv[1]]);}
+            self.stamp_masked(doc,channel,uv,coverage);
+            if self.mirror_u {self.stamp_masked(doc,channel,[1.0-uv[0],uv[1]],coverage);}
         };
         let Some(from)=from else {stamp(to,doc);return;};
         let du=from[0]-to[0];let dv=from[1]-to[1];
@@ -143,5 +154,26 @@ mod tests {
         brush.stamp(&mut doc,Channel::BaseColor,[0.5,0.5]);
         let pixels=doc.selected_layer().pixels.get(&Channel::BaseColor).unwrap();
         assert_eq!(pixels.get_pixel(32,32).0[3],0);
+    }
+}
+
+#[cfg(test)]
+mod uv_masked_tests {
+    use super::*;
+    use crate::mesh::{Mesh, Vertex};
+    #[test]
+    fn masked_paint_does_not_touch_uv_atlas_background() {
+        let mesh = Mesh {name:"tri".into(), vertices:vec![
+            Vertex{position:[0.,0.,0.],normal:[0.,0.,1.],uv:[0.1,0.1]},
+            Vertex{position:[1.,0.,0.],normal:[0.,0.,1.],uv:[0.6,0.1]},
+            Vertex{position:[0.,1.,0.],normal:[0.,0.,1.],uv:[0.1,0.6]},
+        ],indices:vec![0,1,2]};
+        let coverage=UvCoverage::generate(&mesh,64).unwrap();
+        let mut doc=Document::new(64);
+        let brush=Brush{radius:25,opacity:1.,hardness:1.,..Brush::default()};
+        brush.stamp_masked(&mut doc,Channel::BaseColor,[0.50,0.50],Some(&coverage));
+        let pixels=&doc.selected_layer().pixels[&Channel::BaseColor];
+        assert_eq!(pixels.get_pixel(32,32).0[3],0);
+        assert!(pixels.get_pixel(20,20).0[3]>0);
     }
 }

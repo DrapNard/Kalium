@@ -18,6 +18,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Compile all targets
         run: cargo check --all-targets
+      - name: Check opt-in compute path
+        run: cargo check --all-targets --features gpu-experimental
       - name: Run unit tests
         run: cargo test --all-targets
       - name: CLI smoke test
@@ -26,3 +28,4 @@ jobs:
           cargo run -- validate examples/Kalium-Demo.kalium
           cargo run -- preview examples/Kalium-Demo.kalium ./kalium-preview.png
           cargo run -- brush-inspect examples/Soft-Painter.kbrush
+          cargo run -- uv-mask examples/Kalium-Demo.kalium ./kalium-uv-mask.png

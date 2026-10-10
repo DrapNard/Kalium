@@ -2,6 +2,24 @@
 
 Kalium author and release identity: **DrapNard** (https://github.com/DrapNard). All changes distributed as AGPL-3.0-only.
 
+## v0.2.0-alpha.2 — 2026-10-10
+
+Third source iteration by **DrapNard**. Rust toolchain and GPU not available in this environment; build and functional results remain unverified.
+
+### Added
+- UV polygon coverage rasterizer with bounded work, reused by painting and flood fill.
+- Optional UV coverage clipping of brush stamps and masks in 3D and UV views (on by default for supported meshes).
+- Flood-fill tool with tolerance over the selected layer's active PBR channel, respecting UV coverage and integrating sparse Undo/Redo when within budget.
+- CLI `uv-mask` for deterministic binary UV atlas coverage export and tests for winding, clipping, fill boundaries and connectivity.
+- Optional `gpu-experimental` Cargo feature with first WGSL compute stamp shader and CLI `gpu-stamp`; **not connected to interactive painting**, uncompiled and hardware-untested.
+- GPU compute design and validation checklist in `docs/GPU_COMPUTE.md`.
+
+### Limitations and warnings
+- The GUI still uses the CPU reference mesh rasterizer; enabling `gpu-experimental` does not accelerate the GUI.
+- UV coverage is a binary triangle mask, not UV island identification, seam padding or dilation.
+- Flood-fill matches texels in the selected layer, not the flattened visible composite, and is 4-connected.
+- No live Rust tests or GPU execution were possible in this environment. Source inspection and archive validation are not compilation tests.
+
 ## v0.2.0-alpha.1 — 2026-10-10
 
 Second source iteration, prepared for DrapNard. **Not compiled or runtime-tested in this sandbox** (Rust toolchain unavailable). Functional code below requires local verification.

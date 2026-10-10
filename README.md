@@ -4,28 +4,43 @@
 
 Kalium is an independent texture-painting application aiming for interoperability with Adobe Substance 3D Painter and its asset ecosystem. Kalium is **not** an Adobe product and is not affiliated with Adobe.
 
-> **CURRENT STATUS: v0.2.0-alpha.1 / DRAPNARD SOURCE RELEASE.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. This package was assembled in an environment without Rust installed, so it has **not been compiled or runtime-tested in this environment**. Tests are included to run on your own machine.
+> **CURRENT STATUS: v0.2.0-alpha.2 / DRAPNARD SOURCE RELEASE.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. This package was assembled in an environment without Rust installed, so it has **not been compiled or runtime-tested in this environment**. Tests are included to run on your own machine.
 
 ## Current features
 
 - Native Rust desktop application using **egui/eframe + wgpu** for rendering the UI.
 - **DrapNard** release identity; native format and project owner information documented in [AUTHORS.md](AUTHORS.md).
 - 3D textured-mesh viewport, orbit camera (right-drag), zoom (scroll), triangle-based UV hit-testing, painting on the actual mesh surface.
-- 2D UV painting workspace, optional UV wireframe overlay.
+- 2D UV painting workspace, optional UV wireframe overlay. UV-polygon clipping driven by a bounded triangle rasterizer; empty atlas areas are protected by default.
 - Model imports: Wavefront **OBJ**, **glTF**, **GLB** (triangulated primitives with first UV set; transforms baked into the in-memory mesh).
 - Eight PBR paint channels: **Base Color, Roughness, Metallic, Normal, Height, Emissive, Opacity, Ambient Occlusion**.
 - Paint, erase, and paint white/black on layer masks; opacity, brush radius, hardness, spacing, U-axis mirroring, connected brush strokes.
+- 4-connected flood-fill tool, configurable tolerance, optional UV-polygon clipping and sparse undo history.
 - Editable layer stack with reordering, opacity, visibility, simple Normal/Multiply/Add blending and per-layer masks.
 - Sparse, bounded Undo/Redo for brush strokes and full-channel fills where within the 96 MiB history budget; keyboard shortcuts.
 - Fill/clear current channel or layer mask using the active tool mode, plus an eyedropper that samples the active channel in either 2D or 3D.
 - Import PNG/JPEG textures into a new editable layer on the selected PBR channel.
 - Native `.kbrush` JSON brush presets, with supplied Soft Painter and Hard Detail examples.
-- **Headless CLI** to inspect/validate/export/editable-project-preview without launching the graphical UI.
+- **Headless CLI** to inspect/validate/export/editable-project-preview and export UV coverage masks without launching the graphical UI.
+- **Experimental opt-in GPU compute stamp** (WGSL / wgpu; CLI only via `--features gpu-experimental`; not yet integrated into the realtime editor and not validated on hardware).
 - Native, documented, layered **`.kalium`** format, ZIP/JSON/PNG including embedded mesh and channels.
 - Export 8 individual PBR channel PNG maps, BaseColor+Alpha, packed ORM (Occlusion/Roughness/Metallic), and Unity metallic/smoothness texture.
 - Configurable texture size 256, 512, 1024, 2048, or 4096 (nearest-neighbor resampling).
 - `.spp` **signature check only** (HDF5 identification, when applicable). This is **not `.spp` import**.
 - No authentication, cloud services, AI generation, telemetry, or subscriptions.
+
+### Experimental compute brush
+
+```bash
+# Build and check optional GPU module (requires a working Rust toolchain / graphics drivers)
+cargo check --features gpu-experimental
+cargo run --features gpu-experimental -- gpu-stamp in.png out.png 0.5 0.5 30
+
+# Export a reference mesh UV coverage mask (white=paintable)
+cargo run -- uv-mask examples/Kalium-Demo.kalium coverage.png
+```
+
+See [docs/GPU_COMPUTE.md](docs/GPU_COMPUTE.md). The experimental module creates its own GPU device and copies buffers back to the CPU, so it is not yet suitable for interactive real-time painting.
 
 ### Rendering limitation (important)
 

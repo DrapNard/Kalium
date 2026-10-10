@@ -13,6 +13,9 @@ mod paint;
 mod project;
 mod renderer;
 mod spp;
+mod uv;
+#[cfg(feature="gpu-experimental")]
+mod gpu_brush;
 
 use anyhow::Result;
 

@@ -1,7 +1,7 @@
 use crate::{
     document::{BlendMode, Channel, Document},
     export,history::{History,Snapshot},mesh::Mesh,paint::{Brush,BrushMode},
-    project,renderer::{Material,Viewport},spp,ops,brush_preset,
+    project,renderer::{Material,Viewport},spp,ops,brush_preset,uv::UvCoverage,
 };
 use eframe::egui::{self,Color32,ColorImage,TextureHandle,TextureOptions,Vec2};
 use std::path::PathBuf;
@@ -20,6 +20,8 @@ pub struct KaliumApp {
     solo_channel:bool,
     show_uv_wire:bool,
     view:Viewport,
+    uv_coverage:Option<UvCoverage>,
+    uv_clipping:bool,
     material:Option<Material>,
     model_texture:Option<TextureHandle>,
     uv_texture:Option<TextureHandle>,
@@ -40,10 +42,12 @@ impl KaliumApp {
         visuals.widgets.active.bg_fill=Color32::from_rgb(97,78,176);
         visuals.widgets.hovered.bg_fill=Color32::from_rgb(70,59,108);
         cc.egui_ctx.set_visuals(visuals);
+        let doc=Document::new(512);
+        let uv_coverage=UvCoverage::generate(&doc.mesh,doc.size).ok();
         Self {
-            doc:Document::new(512),brush:Brush::default(),channel:Channel::BaseColor,
+            doc,brush:Brush::default(),channel:Channel::BaseColor,
             canvas:Canvas::Model,solo_channel:false,show_uv_wire:true,
-            view:Viewport::new(600,600),material:None,model_texture:None,
+            view:Viewport::new(600,600),uv_coverage,uv_clipping:true,material:None,model_texture:None,
             uv_texture:None,paint_dirty:true,model_dirty:true,
             history:History::new(),previous_uv:None,pending_stroke:None,
             file_path:None,unsaved:false,
@@ -51,6 +55,16 @@ impl KaliumApp {
         }
     }
 
+    fn rebuild_coverage(&mut self) {
+        match UvCoverage::generate(&self.doc.mesh,self.doc.size) {
+            Ok(map)=>self.uv_coverage=Some(map),
+            Err(err)=>{
+                self.uv_coverage=None;
+                self.uv_clipping=false;
+                self.status=format!("UV clipping disabled: {err}");
+            }
+        }
+    }
     fn change(&mut self) {
         self.paint_dirty=true;
         self.model_dirty=true;
@@ -87,7 +101,7 @@ impl KaliumApp {
                     self.doc=Document::new(512);
                     self.history.clear();
                     self.file_path=None;
-                    self.unsaved=false;self.view=Viewport::new(600,600);self.change();
+                    self.unsaved=false;self.view=Viewport::new(600,600);self.rebuild_coverage();self.change();
                     self.unsaved=false;
                     Ok(Some("New Kalium project created".into()))
                 }
@@ -97,6 +111,7 @@ impl KaliumApp {
                     let doc=project::load(&path)?;
                     self.finish_stroke();
                     self.doc=doc;
+                    self.rebuild_coverage();
                     self.history.clear();self.file_path=Some(path.clone());
                     self.change();self.unsaved=false;
                     Ok(Some(format!("Opened {}",path.display())))
@@ -122,6 +137,7 @@ impl KaliumApp {
                     let mesh=Mesh::from_file(&path)?;
                     self.finish_stroke();
                     self.doc.mesh=mesh;
+                    self.rebuild_coverage();
                     self.history.clear();self.change();
                     Ok(Some(format!("Imported {}",path.display())))
                 }
@@ -251,6 +267,9 @@ impl KaliumApp {
             ui.add(egui::Slider::new(&mut self.brush.opacity,0.01..=1.0).text("Opacity"));
             ui.add(egui::Slider::new(&mut self.brush.hardness,0.0..=1.0).text("Hardness"));
             ui.add(egui::Slider::new(&mut self.brush.spacing,0.1..=1.5).text("Spacing"));
+            if self.brush.mode==BrushMode::Bucket {
+                ui.add(egui::Slider::new(&mut self.brush.tolerance,0..=255).text("Color tolerance"));
+            }
             ui.checkbox(&mut self.brush.mirror_u,"Mirror across U axis");
             ui.separator();
             if self.channel.is_color() {
@@ -272,6 +291,10 @@ impl KaliumApp {
             ui.heading("Display");
             if ui.checkbox(&mut self.solo_channel,"Show selected channel in 3D").changed(){self.model_dirty=true;}
             ui.checkbox(&mut self.show_uv_wire,"UV wireframe overlay");
+            ui.add_enabled(self.uv_coverage.is_some(),egui::Checkbox::new(&mut self.uv_clipping,"Clip painting to UV polygons"));
+            if let Some(coverage)=self.uv_coverage.as_ref() {
+                ui.label(format!("UV atlas coverage: {:.1}%",100.0*coverage.covered_texels() as f32/(self.doc.size as f32).powi(2)));
+            }
             ui.separator();
             ui.label(egui::RichText::new("TEXTURE RESOLUTION").small().weak());
             ui.label(format!("{} × {}",self.doc.size,self.doc.size));
@@ -279,13 +302,13 @@ impl KaliumApp {
                 for size in [256,512,1024,2048,4096] {
                     if ui.selectable_label(self.doc.size==size,format!("{size}")).clicked() {
                         self.finish_stroke();
-                        self.doc.resize(size);self.history.clear();self.change();
+                        self.doc.resize(size);self.rebuild_coverage();self.history.clear();self.change();
                     }
                 }
             });
             ui.add_space(8.0);
             ui.label(egui::RichText::new("TIP").small().weak());
-            ui.label("Left-drag paints on the 3D surface or UV image. Right-drag rotates the model.");
+            ui.label("Left-drag paints on the 3D surface or UV image. Flood Fill uses one click. Right-drag rotates the model.");
             ui.label("Mouse wheel zooms. Ctrl+S saves. Ctrl+Z / Ctrl+Y undo or redo strokes.");
         });
     }
@@ -352,6 +375,26 @@ impl KaliumApp {
         self.history.commit(Snapshot {layer_id:pending.layer_id,channel:pending.channel,
             mask:pending.mask,before:pending.before,after});
     }
+    fn fill_uv(&mut self,uv:[f32;2]) {
+        self.finish_stroke();
+        if self.uv_clipping && self.uv_coverage.as_ref().is_some_and(|c| !c.contains_uv(uv)) {
+            self.status="Flood fill skipped: outside the UV polygons".into();
+            return;
+        }
+        let before=History::capture(&mut self.doc,self.channel,self.brush.mode);
+        let layer_id=self.doc.selected_layer().id;
+        let coverage=if self.uv_clipping {self.uv_coverage.as_ref()} else {None};
+        match ops::flood_fill(&mut self.doc,self.channel,uv,&self.brush,coverage) {
+            Ok(true)=>{
+                let after=History::capture(&mut self.doc,self.channel,self.brush.mode);
+                self.history.commit(Snapshot {layer_id,channel:self.channel,mask:false,before,after});
+                self.change();
+                self.status=format!("Flood filled {} at UV ({:.3}, {:.3})",self.channel.label(),uv[0],uv[1]);
+            }
+            Ok(false)=>self.status="No matching pixels to fill at selected UV".into(),
+            Err(err)=>self.status=format!("Flood fill failed: {err}")
+        }
+    }
     fn paint_uv(&mut self,uv:[f32;2]) {
         if uv.iter().any(|v|!v.is_finite() || *v < 0.0 || *v>1.0) {return;}
         if self.brush.mode==BrushMode::Sample {
@@ -366,7 +409,8 @@ impl KaliumApp {
             return;
         }
         self.begin_stroke();
-        self.brush.stroke(&mut self.doc,self.channel,self.previous_uv,uv);
+        let coverage=if self.uv_clipping {self.uv_coverage.as_ref()} else {None};
+        self.brush.stroke_masked(&mut self.doc,self.channel,self.previous_uv,uv,coverage);
         self.previous_uv=Some(uv);
         self.change();
     }
@@ -414,10 +458,11 @@ impl KaliumApp {
                     }
                     if scroll!=0.0 {self.view.zoom(scroll);self.model_dirty=true;}
                 }
-                let (down,secondary,pointer)=ctx.input(|i|{
-                    (i.pointer.primary_down(),i.pointer.secondary_down(),i.pointer.interact_pos())
+                let (down,pressed,secondary,pointer)=ctx.input(|i|{
+                    (i.pointer.primary_down(),i.pointer.primary_pressed(),i.pointer.secondary_down(),i.pointer.interact_pos())
                 });
-                if response.hovered() && down && !secondary {
+                let bucket=self.brush.mode==BrushMode::Bucket;
+                if response.hovered() && (if bucket {pressed} else {down}) && !secondary {
                     if let Some(pos)=pointer {
                         let local=pos-response.rect.min;
                         let x=(local.x/response.rect.width()).clamp(0.0,0.999999);
@@ -428,7 +473,9 @@ impl KaliumApp {
                                 (x*self.view.width as f32) as usize,
                                 (y*self.view.height as f32) as usize),
                         };
-                        if let Some(uv)=uv {self.paint_uv(uv);}
+                        if let Some(uv)=uv {
+                            if bucket {self.fill_uv(uv);} else {self.paint_uv(uv);}
+                        }
                         else {self.previous_uv=None;}
                     }
                 }

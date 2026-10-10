@@ -1,5 +1,7 @@
 //! Headless commands usable by artists and CI without starting a GUI.
-use crate::{brush_preset, document::Channel, export, project, renderer::{Material,Viewport}, spp};
+use crate::{brush_preset, document::Channel, export, project, renderer::{Material,Viewport}, spp, uv::UvCoverage};
+#[cfg(feature="gpu-experimental")]
+use crate::{gpu_brush,paint::Brush};
 use anyhow::{anyhow,bail, Result};
 use std::path::Path;
 
@@ -11,8 +13,10 @@ pub fn run(args: &[String]) -> Result<()> {
         kalium validate <project.kalium>\n\
         kalium export <project.kalium> <output-directory>\n\
         kalium preview <project.kalium> <preview.png>\n\
+        kalium uv-mask <project.kalium> <coverage.png>\n\
         kalium spp-inspect <project.spp>\n\
         kalium brush-inspect <preset.kbrush>\n\
+        kalium gpu-stamp <in.png> <out.png> <u> <v> <radius>  [requires gpu-experimental feature]\n\
       Run without arguments to launch the graphical application.";
     let arg = |i: usize| -> Result<&str> {
         args.get(i).map(String::as_str).ok_or_else(|| anyhow::anyhow!("Missing argument {i}.\n{usage}"))
@@ -58,6 +62,14 @@ pub fn run(args: &[String]) -> Result<()> {
             image.save(arg(2)?)?;
             println!("Rendered 600×600 reference preview: {}",arg(2)?);
         }
+        "uv-mask" => {
+            exact_count(args, 3, usage)?;
+            let doc=project::load(Path::new(arg(1)?))?;
+            let coverage=UvCoverage::generate(&doc.mesh,doc.size)?;
+            coverage.to_image().save(arg(2)?)?;
+            println!("Wrote UV coverage map: {} ({} / {} texels covered)",
+                arg(2)?, coverage.covered_texels(), (doc.size as usize)*(doc.size as usize));
+        }
         "spp-inspect" => {
             exact_count(args, 2, usage)?;
             println!("{}",spp::inspect(Path::new(arg(1)?))?);
@@ -67,6 +79,24 @@ pub fn run(args: &[String]) -> Result<()> {
             let (name,brush)=brush_preset::load(Path::new(arg(1)?))?;
             println!("Brush: {name} | radius={}px | opacity={:.2} | hardness={:.2} | spacing={:.2}",
                 brush.radius,brush.opacity,brush.hardness,brush.spacing);
+        }
+        #[cfg(feature="gpu-experimental")]
+        "gpu-stamp" => {
+            exact_count(args, 6, usage)?;
+            let path=Path::new(arg(1)?);
+            let (width,height)=image::image_dimensions(path)?;
+            if width<1||height<1||width>4096||height>4096 {
+                bail!("GPU brush input dimensions must be 1..=4096");
+            }
+            let mut img=image::open(path)?.to_rgba8();
+            let u:f32=arg(3)?.parse()?;
+            let v:f32=arg(4)?.parse()?;
+            let radius:u32=arg(5)?.parse()?;
+            let mut brush=Brush::default();
+            brush.radius=radius;
+            gpu_brush::stamp(&mut img,&brush,[u,v])?;
+            img.save(arg(2)?)?;
+            println!("Experimental wgpu brush output saved: {}",arg(2)?);
         }
         cmd => bail!("Unknown command: {cmd}\n{usage}"),
     }

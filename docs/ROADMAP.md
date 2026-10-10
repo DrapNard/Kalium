@@ -1,6 +1,6 @@
 # Kalium roadmap — full Substance Painter-class target
 
-This document describes **future development goals**, not current features. `v0.2.0-alpha.1` is a source prototype, not a complete v1.0 product.
+This document describes **future development goals**, not current features. `v0.2.0-alpha.2` is a source prototype, not a complete v1.0 product.
 
 ## v0.1 — first editable foundation (this delivery)
 
@@ -26,6 +26,15 @@ This document describes **future development goals**, not current features. `v0.
 - [x] Headless inspect/validate/export/preview/preset-inspect CLI
 - [x] Reject project archives with unrecognized schema additions and oversize resources
 - [ ] Confirm build and runtime tests on supported platforms
+
+## v0.2-alpha.2 — UV-aware painting and experimental compute (2026-10-10)
+
+- [x] Rasterized, bounded UV coverage mask with mesh triangle clipping in 2D/3D strokes
+- [x] 4-neighbor flood-fill with color tolerance and UV-boundary protection
+- [x] PNG UV coverage visualization from the CLI (`uv-mask`)
+- [x] Opt-in WGSL compute brush proof-of-concept and host code (CLI-only, unverified)
+- [ ] Compile and compare compute stamps to CPU reference on real Vulkan/Metal/DX12 hardware
+- [ ] Integrate long-lived GPU buffers and GPU brush commands with the interactive viewport
 
 ## v0.2 — fast production core
 
