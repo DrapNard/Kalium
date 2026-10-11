@@ -4,7 +4,7 @@
 
 Kalium is an independent texture-painting application aiming for interoperability with Adobe Substance 3D Painter and its asset ecosystem. Kalium is **not** an Adobe product and is not affiliated with Adobe.
 
-> **CURRENT STATUS: v0.2.0-alpha.5.2 / DRAPNARD SOURCE HOTFIX.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. This package was assembled in an environment without Rust installed, so it has **not been compiled or runtime-tested in this environment**. Tests are included to run on your own machine.
+> **CURRENT STATUS: v0.3.0-alpha.1 / DRAPNARD SOURCE ALPHA.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. The previous v0.2.0-alpha.5.2 release passed **35/35 tests** on the maintainer's Arch machine. Changes in v0.3.0-alpha.1 have **not yet been compiled or run in this packaging environment**; the new unit tests require validation on a Rust-equipped machine.
 
 ## Current features
 
@@ -28,11 +28,20 @@ Kalium is an independent texture-painting application aiming for interoperabilit
 - Native `.kbrush` JSON brush presets, with supplied Soft Painter and Hard Detail examples.
 - **Headless CLI** to inspect/validate/export/editable-project-preview and export UV coverage masks without launching the graphical UI.
 - **Experimental opt-in GPU compute stamp** (WGSL / wgpu; CLI only via `--features gpu-experimental`; not yet integrated into the realtime editor and not validated on hardware).
-- Native, documented, layered **`.kalium`** format, ZIP/JSON/PNG including embedded mesh and channels.
-- Export 8 individual PBR channel PNG maps, BaseColor+Alpha, packed ORM (Occlusion/Roughness/Metallic), and Unity metallic/smoothness texture.
+- **Multiple editable Texture Sets** with independent resolutions, layers, masks, PBR channel switches and stable set IDs. Sets are not yet assigned to individual mesh materials; the active set previews across the whole mesh.
+- Native, documented, layered **`.kalium`** v3 format, ZIP/JSON/PNG including embedded mesh and all Texture Sets; backward-compatible loading of v1/v2.
+- Export 8 individual PBR channel PNG maps, BaseColor+Alpha, packed ORM (Occlusion/Roughness/Metallic), and Unity metallic/smoothness texture, for either the active set or every set into individual named folders.
 - Configurable texture size 256, 512, 1024, 2048, or 4096 (nearest-neighbor resampling).
 - `.spp` **signature check only** (HDF5 identification, when applicable). This is **not `.spp` import**.
 - No authentication, cloud services, AI generation, telemetry, or subscriptions.
+
+### Texture Sets (v0.3.0-alpha.1)
+
+**Texture Set List** now has an **Add set** button, a per-set selector, a rename field and a guarded remove button. Switching sets is a zero-copy transfer of texture buffers, and clears brush Undo/Redo rather than allowing history collisions with identically numbered layers in other sets. **Texture Set Settings** edits the active set's resolution independently. `File → Export active set PBR textures` preserves the old export workflow; `File → Export all texture sets` creates numbered, sanitized subfolders.
+
+`.kalium` manifest **v3** saves inactive sets under `texture_sets/<set id>/layers/<layer id>/...` and keeps the active set's image files under the legacy `layers/...` path, while older v1/v2 documents continue to open. Limits: 16 sets, 64 layers per set, 512 MiB decoded texture budget. A project saved as v3 cannot be opened by older Kalium versions; **back up your project before migrating it**.
+
+**Limitation:** the OBJ/glTF importer currently merges mesh primitives without retaining material IDs. This release provides independent editing and exporting of sets but not per-triangle material assignments or multiple simultaneous materials in the viewport. Do not treat it as full Substance Painter Texture Set parity.
 
 ### Workspace serialization and channel switches (v0.2.0-alpha.5)
 
@@ -50,7 +59,7 @@ Use **View → Show / hide panels** to reopen closed panes, **View → Restore d
 
 The v0.2.0-alpha.4 default layout gives additional width to the 3D and 2D workspaces. Existing layout files will **not** be overwritten by this update; use **View → Restore default workspace** to switch to the new proportions.
 
-The Assets panel currently exposes the **implemented brush presets and texture-import operations**. It does not pretend to ship the materials shown in the design reference. Texture Set List currently displays the actual single texture set. Multi-set authoring, Substance preset parsing and Smart Materials are not implemented yet.
+The Assets panel currently exposes the **implemented brush presets and texture-import operations**. It does not pretend to ship the materials shown in the design reference. Texture Set List now offers independent editable sets, but mesh-material binding, Substance preset parsing and Smart Materials are not implemented yet.
 
 ### Experimental compute brush
 
@@ -98,6 +107,7 @@ cargo run -- --version
 cargo run -- inspect examples/Kalium-Demo.kalium
 cargo run -- validate examples/Kalium-Demo.kalium
 cargo run -- export examples/Kalium-Demo.kalium ./exported
+cargo run -- export-all examples/Kalium-Demo.kalium ./exported-by-set
 cargo run -- preview examples/Kalium-Demo.kalium ./preview.png
 cargo run -- brush-inspect examples/Soft-Painter.kbrush
 cargo run -- spp-inspect path/to/owned-project.spp
@@ -125,7 +135,9 @@ SPP inspection checks only for an HDF5 signature. **It cannot read or save Subst
 | Import editable PNG/JPEG layer | File → Import PNG/JPEG as layer |
 | Fill current channel / mask | Brush Studio → Fill selected channel / mask |
 | Load/save `.kbrush` preset | File → Load/Save brush preset |
-| Export textures | File → Export PBR textures |
+| Export active textures | File → Export active set PBR textures |
+| Export every Texture Set | File → Export all texture sets |
+| Switch / create / rename a set | Texture Set List panel |
 
 For a keyboard layout where Command is used, shortcuts adapt to the OS.
 
@@ -135,13 +147,15 @@ A `.kalium` file is an ordinary ZIP archive:
 
 ```text
 MyTexture.kalium
-├── manifest.json             # Version, mesh, layer stack, settings
-└── layers/
+├── manifest.json             # Version, mesh, Texture Set metadata
+├── layers/
     └── <numeric layer id>/
         ├── mask.png           # Grayscale layer mask
         ├── BaseColor.png
         ├── Roughness.png
         └── ...                # Sparse per-channel layers
+└── texture_sets/             # Additional (inactive) sets in v3
+    └── <texture set id>/layers/<numeric layer id>/...
 ```
 
 It's intentionally independent of proprietary formats, editable, and inspectable without Kalium. See [docs/FORMAT.md](docs/FORMAT.md) and [docs/BRUSH_PRESETS.md](docs/BRUSH_PRESETS.md).

@@ -88,3 +88,7 @@ This document describes **future development goals**, not current features. `v0.
 - [ ] Security review of parsers, plugins and remote content
 
 No unverified feature may be marked complete merely because a button or API surface exists. Reliable use matters more than menu parity.
+
+## Texture Set milestone — 2026-10-11
+
+The alpha.6 milestone is implemented as v0.3.0-alpha.1 source: independent per-set layers, resolution, persistence and exports. **Next critical milestone:** mesh material IDs in OBJ/glTF importer and per-triangle set binding in the renderer/pick buffer, followed by multi-material PBR preview and GPU stroke migration. This stage is not complete and the new source requires Cargo verification.

@@ -6,6 +6,8 @@ use std::collections::{HashMap,HashSet};
 
 pub const MAX_SIZE: u32 = 4096;
 pub const MAX_LAYERS: usize = 64;
+pub const MAX_TEXTURE_SETS: usize = 16;
+pub const MAX_DECODED_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Channel {
@@ -78,20 +80,119 @@ impl Layer {
     }
 }
 
+/// A complete inactive texture set. The active set lives in the legacy Document
+/// fields, so existing brush, history, and viewport code operates on the active
+/// set without cloning potentially hundreds of megabytes on each switch.
+pub struct TextureSet {
+    pub id: u32,
+    pub name: String,
+    pub size: u32,
+    pub layers: Vec<Layer>,
+    pub selected: usize,
+    pub next_layer_id: u32,
+}
+
 pub struct Document {
-    pub mesh:Mesh,
-    pub size:u32,
-    pub layers:Vec<Layer>,
-    pub selected:usize,
-    pub next_layer_id:u32,
+    pub mesh: Mesh,
+    pub size: u32,
+    pub layers: Vec<Layer>,
+    pub selected: usize,
+    pub next_layer_id: u32,
+    pub active_set_id: u32,
+    pub active_set_name: String,
+    pub next_set_id: u32,
+    /// These exclude the active set. Switching uses ownership transfer, not clones.
+    pub texture_sets: Vec<TextureSet>,
 }
 
 impl Document {
     pub fn new(size:u32)->Self {
         let size=size.clamp(64,MAX_SIZE);
         Self {mesh:Mesh::demo_cube(),size,layers:vec![Layer::new(1,"Paint Layer",size)],
-            selected:0,next_layer_id:2}
+            selected:0,next_layer_id:2,active_set_id:1,active_set_name:"Default".into(),
+            next_set_id:2,texture_sets:Vec::new()}
     }
+    pub fn texture_set_count(&self) -> usize { 1 + self.texture_sets.len() }
+
+    pub fn texture_set_list(&self) -> Vec<(u32, String, u32, bool)> {
+        let mut list = vec![(self.active_set_id, self.active_set_name.clone(), self.size, true)];
+        list.extend(self.texture_sets.iter().map(|set| (set.id, set.name.clone(), set.size, false)));
+        list.sort_by_key(|item| item.0);
+        list
+    }
+
+    /// Takes ownership of the active layers without cloning pixel buffers.
+    pub fn activate_texture_set(&mut self, id: u32) -> Result<bool> {
+        if id == self.active_set_id { return Ok(false); }
+        let index = self.texture_sets.iter().position(|set| set.id == id)
+            .ok_or_else(||anyhow::anyhow!("Unknown texture set {id}"))?;
+        let target = self.texture_sets.swap_remove(index);
+        let previous = TextureSet {
+            id: self.active_set_id, name: std::mem::take(&mut self.active_set_name),
+            size: self.size, layers: std::mem::take(&mut self.layers),
+            selected: self.selected, next_layer_id: self.next_layer_id,
+        };
+        self.texture_sets.push(previous);
+        self.active_set_id = target.id;
+        self.active_set_name = target.name;
+        self.size = target.size;
+        self.layers = target.layers;
+        self.selected = target.selected;
+        self.next_layer_id = target.next_layer_id;
+        Ok(true)
+    }
+
+    pub fn add_texture_set(&mut self, name: &str) -> Result<u32> {
+        if self.texture_set_count() >= MAX_TEXTURE_SETS { bail!("Maximum number of texture sets reached"); }
+        let name = name.trim();
+        if name.is_empty() || name.len() > 128 { bail!("Texture set name must contain 1–128 bytes"); }
+        let id = self.next_set_id;
+        let next = id.checked_add(1).ok_or_else(||anyhow::anyhow!("Texture set ID counter exhausted"))?;
+        let mut projected = self.decoded_bytes();
+        projected = projected.saturating_add((self.size as u64).pow(2));
+        if projected > MAX_DECODED_BYTES { bail!("Texture sets exceed 512-MiB decoded texture budget"); }
+        let new_set = TextureSet {
+            id, name: name.to_owned(), size: self.size,
+            layers: vec![Layer::new(1,"Paint Layer",self.size)],
+            selected: 0, next_layer_id: 2,
+        };
+        self.texture_sets.push(new_set);
+        self.next_set_id = next;
+        self.activate_texture_set(id)?;
+        Ok(id)
+    }
+
+    pub fn remove_active_texture_set(&mut self) -> Result<()> {
+        if self.texture_sets.is_empty() { bail!("A project must keep at least one texture set"); }
+        let removed_id = self.active_set_id;
+        // The lowest surviving id is chosen predictably.
+        let id = self.texture_sets.iter().map(|set|set.id).min()
+            .ok_or_else(||anyhow::anyhow!("No other texture set"))?;
+        self.activate_texture_set(id)?;
+        self.texture_sets.retain(|set| set.id != removed_id);
+        Ok(())
+    }
+
+    pub fn rename_active_texture_set(&mut self, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() || name.len() > 128 { bail!("Texture set name must contain 1–128 bytes"); }
+        self.active_set_name = name.to_owned();
+        Ok(())
+    }
+
+    pub fn decoded_bytes(&self) -> u64 {
+        fn used(layers: &[Layer]) -> u64 {
+            layers.iter().fold(0u64, |sum, layer| sum.saturating_add(
+                layer.mask.len() as u64 + layer.pixels.values().map(|p|p.len() as u64).sum::<u64>()))
+        }
+        self.texture_sets.iter().fold(used(&self.layers), |sum,set| sum.saturating_add(used(&set.layers)))
+    }
+
+    pub fn composite_for_set(&self, id: u32, channel: Channel) -> Option<RgbaImage> {
+        if id == self.active_set_id { return Some(self.composite(channel)); }
+        self.texture_sets.iter().find(|set|set.id==id).map(|set|composite_layers(&set.layers,set.size,channel))
+    }
+
     pub fn selected_layer(&self)->&Layer {&self.layers[self.selected]}
     pub fn selected_layer_mut(&mut self)->&mut Layer {&mut self.layers[self.selected]}
     pub fn add_layer(&mut self)->Result<()> {
@@ -114,10 +215,7 @@ impl Document {
         // Avoid allocating a full second copy of a multi-channel 4K layer
         // when it would exceed the same 512-MiB decoded document budget
         // enforced by the native .kalium importer.
-        let used=self.layers.iter().fold(0u64,|sum,layer| {
-            sum.saturating_add((layer.mask.len() as u64).saturating_add(
-                layer.pixels.values().map(|image|image.len() as u64).sum::<u64>()))
-        });
+        let used=self.decoded_bytes();
         let selected=self.selected_layer();
         let extra=(selected.mask.len() as u64).saturating_add(
             selected.pixels.values().map(|image|image.len() as u64).sum::<u64>());
@@ -156,10 +254,47 @@ impl Document {
         }
         self.size=size;
     }
-    pub fn composite(&self,channel:Channel)->RgbaImage {
-        let size=self.size;
+    pub fn composite(&self, channel: Channel) -> RgbaImage {
+        composite_layers(&self.layers,self.size,channel)
+    }
+    pub fn validate(&self)->Result<()> {
+        self.mesh.validate()?;
+        if self.texture_set_count()>MAX_TEXTURE_SETS { bail!("Too many texture sets"); }
+        if self.active_set_id==0 || self.next_set_id<=self.active_set_id { bail!("Invalid active texture set ID"); }
+        validate_texture_set(self.size,&self.layers,self.selected,self.next_layer_id,&self.active_set_name)?;
+        let mut ids=HashSet::from([self.active_set_id]);
+        for set in &self.texture_sets {
+            if set.id==0 || set.id>=self.next_set_id || !ids.insert(set.id) {bail!("Duplicate or invalid texture set ID");}
+            validate_texture_set(set.size,&set.layers,set.selected,set.next_layer_id,&set.name)?;
+        }
+        if self.decoded_bytes()>MAX_DECODED_BYTES {bail!("Project exceeds 512-MiB decoded texture budget");}
+        Ok(())
+    }
+
+}
+
+fn validate_texture_set(size:u32,layers:&[Layer],selected:usize,next_layer_id:u32,name:&str)->Result<()> {
+    if !(64..=MAX_SIZE).contains(&size) {bail!("Invalid texture dimension");}
+    if name.trim().is_empty() || name.len()>128 {bail!("Invalid texture set name");}
+    if layers.is_empty() || layers.len()>MAX_LAYERS {bail!("Invalid layer count");}
+    if selected>=layers.len() {bail!("Invalid selected layer");}
+    let mut ids=HashSet::new();
+    if next_layer_id<=layers.iter().map(|l|l.id).max().unwrap_or(0) {bail!("Invalid next layer ID");}
+    for layer in layers {
+        if !ids.insert(layer.id) {bail!("Duplicate layer ID");}
+        if layer.name.is_empty() || layer.name.len()>1024 {bail!("Invalid layer name");}
+        if layer.mask.dimensions()!=(size,size) {bail!("Invalid layer mask size");}
+        if !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity) {bail!("Invalid opacity");}
+        for image in layer.pixels.values() {
+            if image.dimensions()!=(size,size) {bail!("Invalid layer texture size");}
+        }
+    }
+    Ok(())
+}
+
+fn composite_layers(layers:&[Layer],size:u32,channel:Channel)->RgbaImage {
         let mut out=ImageBuffer::from_pixel(size,size,Rgba(channel.background()));
-        for layer in &self.layers {
+        for layer in layers {
             if !layer.visible || layer.opacity<=0.0 {continue;}
             if layer.disabled_channels.contains(&channel) {continue;}
             let Some(src)=layer.pixels.get(&channel) else {continue};
@@ -184,27 +319,7 @@ impl Document {
         }
         out
     }
-    pub fn validate(&self)->Result<()> {
-        self.mesh.validate()?;
-        if !(64..=MAX_SIZE).contains(&self.size) {bail!("Texture dimension is invalid");}
-        if self.layers.is_empty() || self.layers.len()>MAX_LAYERS {bail!("Invalid layer count");}
-        if self.selected>=self.layers.len() {bail!("Invalid selected layer");}
-        let mut ids=HashSet::new();
-        if self.next_layer_id <= self.layers.iter().map(|l|l.id).max().unwrap_or(0) {
-            bail!("Next layer ID must exceed all existing IDs");
-        }
-        for layer in &self.layers {
-            if !ids.insert(layer.id) {bail!("Duplicate layer id");}
-            if layer.name.is_empty() || layer.name.len()>1024 {bail!("Invalid layer name length");}
-            if layer.mask.dimensions()!=(self.size,self.size) {bail!("Invalid layer mask size");}
-            if !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity) {bail!("Invalid layer opacity");}
-            for image in layer.pixels.values() {
-                if image.dimensions()!=(self.size,self.size) {bail!("Invalid layer image dimensions");}
-            }
-        }
-        Ok(())
-    }
-}
+
 
 #[cfg(test)]
 mod tests {
@@ -267,6 +382,27 @@ mod tests {
         assert_eq!(doc.selected_layer().pixels[&Channel::BaseColor].get_pixel(4,5).0,[24,38,52,255]);
         doc.selected_layer_mut().disabled_channels.remove(&Channel::BaseColor);
         assert_eq!(doc.composite(Channel::BaseColor).get_pixel(4,5).0,[24,38,52,255]);
+    }
+
+    #[test]
+    fn texture_sets_keep_independent_layers_and_resolutions() {
+        let mut doc=Document::new(64);
+        doc.selected_layer_mut().pixels_mut(Channel::BaseColor,64).put_pixel(1,1,Rgba([200,0,0,255]));
+        let second=doc.add_texture_set("Armor").unwrap();
+        assert_eq!(doc.active_set_id,second);
+        assert_eq!(doc.texture_set_count(),2);
+        doc.resize(128);
+        doc.selected_layer_mut().pixels_mut(Channel::BaseColor,128).put_pixel(1,1,Rgba([0,200,0,255]));
+        doc.activate_texture_set(1).unwrap();
+        assert_eq!(doc.size,64);
+        assert_eq!(doc.composite(Channel::BaseColor).get_pixel(1,1).0,[200,0,0,255]);
+        assert_eq!(doc.composite_for_set(second,Channel::BaseColor).unwrap().get_pixel(1,1).0,[0,200,0,255]);
+        doc.activate_texture_set(second).unwrap();
+        assert_eq!(doc.size,128);
+        doc.validate().unwrap();
+        doc.remove_active_texture_set().unwrap();
+        assert_eq!(doc.texture_set_count(),1);
+        assert_eq!(doc.active_set_id,1);
     }
 
 }

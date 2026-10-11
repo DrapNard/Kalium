@@ -12,7 +12,7 @@ use std::path::PathBuf;
 #[derive(Clone,Copy,PartialEq,Eq)]
 enum Canvas {Model,UV}
 #[derive(Clone,Copy)]
-enum Action {New,Open,Save,SaveAs,ImportMesh,ImportTexture,Export,InspectSpp,LoadBrush,SaveBrush,Fill,ClearChannel,InvertMask,ResetMask}
+enum Action {New,Open,Save,SaveAs,ImportMesh,ImportTexture,Export,InspectSpp,LoadBrush,SaveBrush,Fill,ClearChannel,InvertMask,ResetMask,ExportAll}
 #[derive(Clone,Copy)]
 enum LayerCommand {Add,Duplicate,Remove,Up,Down}
 struct PendingStroke {layer_id:u32,channel:Channel,mask:bool,before:Vec<u8>}
@@ -42,6 +42,7 @@ pub struct KaliumApp {
     saved_layout:Vec<u8>,
     asset_search:String,
     show_tool_shelf:bool,
+    texture_set_name_input:String,
 }
 
 impl KaliumApp {
@@ -65,6 +66,7 @@ impl KaliumApp {
             status:"Ready • Left drag to paint • Right drag to orbit • Scroll to zoom".into(),
             dock:layout::load_workspace(),last_layout_save:Instant::now(),
             saved_layout:Vec::new(),asset_search:String::new(),show_tool_shelf:true,
+            texture_set_name_input:"Default".into(),
         }
     }
 
@@ -112,6 +114,7 @@ impl KaliumApp {
                 Action::New=>{
                     self.finish_stroke();
                     self.doc=Document::new(512);
+                    self.texture_set_name_input=self.doc.active_set_name.clone();
                     self.history.clear();
                     self.file_path=None;
                     self.unsaved=false;self.view=Viewport::new(600,600);self.rebuild_coverage();self.change();
@@ -124,6 +127,7 @@ impl KaliumApp {
                     let doc=project::load(&path)?;
                     self.finish_stroke();
                     self.doc=doc;
+                    self.texture_set_name_input=self.doc.active_set_name.clone();
                     self.rebuild_coverage();
                     self.history.clear();self.file_path=Some(path.clone());
                     self.change();self.unsaved=false;
@@ -232,6 +236,12 @@ impl KaliumApp {
                     let n=export::export_textures(&self.doc,&dir)?;
                     Ok(Some(format!("Exported {n} PNG texture maps into {}",dir.display())))
                 }
+                Action::ExportAll=>{
+                    self.finish_stroke();
+                    let Some(dir)=rfd::FileDialog::new().pick_folder() else {return Ok(None)};
+                    let n=export::export_all_texture_sets(&self.doc,&dir)?;
+                    Ok(Some(format!("Exported {n} texture maps from {} sets into {}",self.doc.texture_set_count(),dir.display())))
+                }
                 Action::InspectSpp=>{
                     let Some(path)=rfd::FileDialog::new()
                         .add_filter("Substance Painter project", &["spp"]).pick_file() else {return Ok(None)};
@@ -260,7 +270,8 @@ impl KaliumApp {
                         ("Import PNG / JPEG as layer…",Action::ImportTexture),
                         ("Load brush preset (.kbrush)…",Action::LoadBrush),
                         ("Save brush preset (.kbrush)…",Action::SaveBrush),
-                        ("Export PBR textures…",Action::Export),
+                        ("Export active set PBR textures…",Action::Export),
+                        ("Export all texture sets…",Action::ExportAll),
                         ("Clear active channel",Action::ClearChannel),
                         ("Inspect SPP signature (experimental)…",Action::InspectSpp),
                     ] {
@@ -595,15 +606,68 @@ impl KaliumApp {
     fn texture_sets(&mut self,ui:&mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading("Texture Set List");
-            if ui.small_button("Import mesh…").clicked(){self.perform(Action::ImportMesh);}
+            ui.label(egui::RichText::new(format!("{} sets",self.doc.texture_set_count())).small().weak());
         });
         ui.separator();
-        // V0.2: one texture set per document. Do not fabricate materials from a reference picture.
-        let _=ui.selectable_label(true,format!("◉ Default  •  {}×{}",self.doc.size,self.doc.size))
-            .on_hover_text("Current texture set; multi-material support is not yet available");
+        let mut switch_to=None;
+        for (id,name,size,active) in self.doc.texture_set_list() {
+            if ui.selectable_label(active,format!("{}  {}  ·  {}×{}",
+                    if active {"◉"} else {"○"},name,size,size)).clicked() && !active {
+                switch_to=Some(id);
+            }
+        }
+        if let Some(id)=switch_to {
+            self.finish_stroke();
+            match self.doc.activate_texture_set(id) {
+                Ok(_)=>{
+                    self.texture_set_name_input=self.doc.active_set_name.clone();
+                    self.history.clear();
+                    self.rebuild_coverage();
+                    self.change();
+                    self.status=format!("Selected texture set: {}",self.doc.active_set_name);
+                }
+                Err(err)=>self.status=format!("Cannot select texture set: {err}"),
+            }
+        }
+        ui.separator();
+        ui.horizontal_wrapped(|ui|{
+            if ui.small_button("+ Add set").clicked() {
+                self.finish_stroke();
+                let name=format!("Texture Set {}",self.doc.next_set_id);
+                match self.doc.add_texture_set(&name) {
+                    Ok(_)=>{
+                        self.texture_set_name_input=name;
+                        self.history.clear();self.rebuild_coverage();self.change();
+                        self.status="Created independent texture set".into();
+                    }
+                    Err(err)=>self.status=format!("Cannot create texture set: {err}"),
+                }
+            }
+            if ui.add_enabled(self.doc.texture_set_count()>1,egui::Button::new("− Remove set")).clicked() {
+                self.finish_stroke();
+                match self.doc.remove_active_texture_set() {
+                    Ok(())=>{
+                        self.texture_set_name_input=self.doc.active_set_name.clone();
+                        self.history.clear();self.rebuild_coverage();self.change();
+                        self.status="Removed texture set".into();
+                    }
+                    Err(err)=>self.status=format!("Cannot remove texture set: {err}"),
+                }
+            }
+        });
+        ui.horizontal(|ui|{
+            ui.add(egui::TextEdit::singleline(&mut self.texture_set_name_input).desired_width(140.0));
+            if ui.small_button("Rename").clicked() {
+                match self.doc.rename_active_texture_set(&self.texture_set_name_input) {
+                    Ok(())=>{self.texture_set_name_input=self.doc.active_set_name.clone();self.change();}
+                    Err(err)=>self.status=format!("Cannot rename texture set: {err}"),
+                }
+            }
+        });
+        ui.separator();
         ui.label(egui::RichText::new(format!("Mesh: {}",self.doc.mesh.name)).weak().small());
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Multiple material texture sets and per-set shaders: planned.").weak().small());
+        ui.label(egui::RichText::new("Texture sets have separate paint stacks and resolutions. The current 3D renderer applies the active set to the whole mesh; per-material binding remains to be implemented.").weak().small());
+        if ui.small_button("Import mesh…").clicked(){self.perform(Action::ImportMesh);}
     }
 
     fn texture_settings(&mut self,ui:&mut egui::Ui) {
@@ -627,7 +691,7 @@ impl KaliumApp {
             ui.label(format!("Coverage: {:.1}%",100.0*map.covered_texels() as f32/(self.doc.size as f32).powi(2)));
         }
         ui.separator();
-        ui.label(egui::RichText::new("Bake mesh maps, UDIM and per-material texture sets are not yet implemented.").weak().small());
+        ui.label(egui::RichText::new("Bake mesh maps, UDIM and assignment to individual mesh materials are not yet implemented.").weak().small());
     }
 
     fn properties(&mut self,ui:&mut egui::Ui) {

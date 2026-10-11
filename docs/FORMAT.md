@@ -1,39 +1,53 @@
-# Kalium project format — manifests v1 and v2
+# Kalium native format — manifests v1, v2 and v3
 
-Extension `.kalium`. ZIP archive (deflate compression) with UTF-8 JSON `manifest.json` and PNG layer images. The format is independently documented and does not contain Adobe files.
+The `.kalium` extension describes an independent ZIP/JSON/PNG container. It contains no Adobe binary code or resources. Version 3 introduces separate editable Texture Sets. Version 1/2 projects continue to load and are migrated in memory to one set named `Default`.
 
-## Manifest
+## v3 example
 
 ```json
 {
   "format": "Kalium Project",
-  "version": 2,
-  "size": 512,
+  "version": 3,
   "mesh": {"name": "Cube", "vertices": [], "indices": []},
+  "size": 512,
   "selected": 0,
   "next_layer_id": 2,
   "layers": [
-    {
-      "id": 1,
-      "name": "Paint Layer",
-      "visible": true,
-      "opacity": 1.0,
-      "blend": "Normal",
-      "channels": ["BaseColor", "Roughness"],
-      "disabled_channels": ["Roughness"]
-    }
+    {"id":1,"name":"Paint Layer","visible":true,"opacity":1.0,
+     "blend":"Normal","channels":["BaseColor"],"disabled_channels":[]}
+  ],
+  "active_set_id": 1,
+  "active_set_name": "Default",
+  "next_set_id": 3,
+  "texture_sets": [
+    {"id":2,"name":"Armor","size":1024,"selected":0,"next_layer_id":2,
+     "layers":[{"id":1,"name":"Paint Layer","visible":true,"opacity":1.0,
+                "blend":"Normal","channels":["Roughness"],"disabled_channels":[]}]}
   ]
 }
 ```
 
-`mesh.vertices` is an array of `{ "position":[f32,f32,f32], "normal":[...], "uv":[f32,f32] }`. `mesh.indices` is a flattened index list of triangles. UV origin is texture top-left.
+The example mesh array is abbreviated; actual projects contain a nonempty, validated triangle mesh. Every set may use a different power-of-two or valid custom size, up to 4096. `next_set_id` is strictly larger than all existing IDs; IDs are stable across edits. `texture_sets` contains **only inactive** sets; the active set remains represented by the legacy top-level `size`, `selected`, `next_layer_id` and `layers` properties. This choice enables old painting APIs to edit the active set without extra memory copies.
 
-Each layer must have `layers/{id}/mask.png` (8-bit grayscale). Each `channels[]` entry must correspond to `layers/{id}/{ChannelFilename}.png` (8-bit RGBA). Unlisted channel files are absent, indicating a fully transparent paint layer for that channel. All images have dimensions `size × size`. Layer textures contain stroke alpha; the displayed result is computed over channel defaults with the layer's mask, blend and opacity.
+## ZIP paths
 
-**Format evolution:** v1 projects had no `disabled_channels` property; on import, all channels default to enabled. As of Kalium `v0.2.0-alpha.5`, new saves use manifest **version 2**, preserving disabled PBR channels on each layer. `channels[]` still lists *stored* painted texture data, whether or not it is currently enabled; disabled pixel data is never deleted. v1 and v2 manifests can both be loaded. Existing Kalium builds may reject the v2 manifest, so back up projects before saving them in newer alphas.
+```text
+manifest.json
+layers/{layer_id}/mask.png
+layers/{layer_id}/BaseColor.png
+layers/{layer_id}/{channel_name}.png
+texture_sets/{set_id}/layers/{layer_id}/mask.png
+texture_sets/{set_id}/layers/{layer_id}/{channel_name}.png
+```
 
-Default base channel values are documented in `src/document.rs`. The format currently stores a normalized mesh. Mesh import/export history and source transforms are not preserved separately.
+The root `layers/` refers to **the active set**, whatever its `active_set_id`. Each `texture_sets/{set_id}/...` directory contains an inactive set. Every layer has an 8-bit grayscale mask; a listed channel has an RGBA PNG. An unlisted channel is treated as transparent. `disabled_channels` records non-destructively disabled channels. The mesh has top-left UV origin.
 
-## Robustness
+## Compatibility and restrictions
 
-The reader validates archive entries, dimensions, layers, triangle limits, floats, known version number and decompressed size per member. JSON schema migrations and unknown-field preservation are future work. As with any alpha file format, keep a backup before opening valuable art.
+- **v1:** no per-layer `disabled_channels` and no Texture Set metadata; all channels enabled by default.
+- **v2:** adds `disabled_channels`.
+- **v3:** adds active and inactive Texture Set state and unique paths for set resources. Older Kalium versions cannot read it.
+- The parser rejects extra unknown ZIP files, duplicate archive names, duplicate/invalid set IDs, invalid image sizes, invalid source mesh data, and a summed decoded texture budget above 512 MiB. Up to 16 sets and 64 layers per set are supported.
+- ZIP member names use numeric IDs, not user-controlled set names. PNG exports use a sanitized name with the stable set ID to avoid traversal and collisions.
+- Unknown format fields cannot yet round-trip; preserve backups of valuable projects before migrating to v3.
+- These sets are **not yet assigned to mesh materials**. Kalium's current CPU viewport displays one active material over all triangles. There is no implied compatibility with `.spp`.

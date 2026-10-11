@@ -1,3 +1,19 @@
+## v0.3.0-alpha.1 — 2026-10-11 — DrapNard
+
+**Multiple independent Texture Sets and native project format v3.** This update is source-level and has not been compiled in the packaging environment. The user reported **35/35 passing tests for v0.2.0-alpha.5.2**; new changes still require testing.
+
+### Added
+- Texture Set List operations: create, switch, rename, delete; each set owns its own resolution, layers, masks, PBR channels and selection state.
+- Zero-copy active-set switching. Brush undo history is cleared at switch boundaries to prevent same-layer-ID cross-set corruption.
+- `.kalium` manifest v3 with isolated PNG paths for inactive sets, stable IDs and strict validation. Old v1/v2 projects remain readable.
+- Per-set PBR export with collision-resistant folder names; `export-all` headless CLI and File menu command.
+- New Rust tests covering independent texture edits/resolutions, multi-set save/load, legacy v1 demo and separated texture exports.
+
+### Known limitations
+- Imported mesh primitives currently lack material assignments. Each set is independently editable/exportable, but only the active set is shown across the entire 3D mesh.
+- Does not implement Substance `.spp` parsing, Smart Materials or interactive GPU painting.
+- The new code has not yet been compiled or executed in this environment. Run Cargo tests before treating it as a stable release.
+
 # Kalium changelog
 
 Kalium author and release identity: **DrapNard** (https://github.com/DrapNard). All changes distributed as AGPL-3.0-only.

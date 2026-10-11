@@ -13,7 +13,8 @@
 | GPU rendering | 🟡 | wgpu UI compositing; CPU 3D rasterizer |
 | Physically accurate PBR | 🟡 | Simple preview, not a reference metallic/roughness BRDF |
 | Brush pressure/tilt/rotation | ❌ | Mouse only at the moment |
-| UDIM / multi-texture sets | ❌ | Single 0–1 UV texture canvas |
+| Multiple editable Texture Sets | 🟡 | Independent paint layers, resolutions, saves and exports; no mesh material assignments |
+| UDIM | ❌ | Single 0–1 UV canvas per set, no UDIM tile addressing |
 | Material ID masks, baking AO/curvature/normal | ❌ | Not implemented |
 | Smart Materials / Smart Masks | ❌ | Not implemented |
 | `.spp` read | ❌ | HDF5 header identification only (where applicable) |

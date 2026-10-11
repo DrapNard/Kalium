@@ -36,3 +36,5 @@ git tag -a v0.2.0-alpha.4 -m "Kalium v0.2.0-alpha.4 by DrapNard"
 Tagging does not imply a GitHub release has been published; no remote repository is created by this source archive.
 
 - v0.2.0-alpha.5.2 source hotfix: DrapNard (Layer constructor clarity and clean-checkout recovery).
+
+- `v0.3.0-alpha.1` — multi Texture Set prototype by DrapNard, 2026-10-11.

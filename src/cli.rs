@@ -12,6 +12,7 @@ pub fn run(args: &[String]) -> Result<()> {
         kalium inspect <project.kalium>\n\
         kalium validate <project.kalium>\n\
         kalium export <project.kalium> <output-directory>\n\
+        kalium export-all <project.kalium> <output-directory>\n\
         kalium preview <project.kalium> <preview.png>\n\
         kalium uv-mask <project.kalium> <coverage.png>\n\
         kalium spp-inspect <project.spp>\n\
@@ -28,7 +29,11 @@ pub fn run(args: &[String]) -> Result<()> {
             exact_count(args, 2, usage)?;
             let doc = project::load(Path::new(arg(1)?))?;
             println!("Kalium project: {}", arg(1)?);
+            println!("Texture sets: {} | Active: {} (id {})",doc.texture_set_count(),doc.active_set_name,doc.active_set_id);
             println!("Texture: {}×{} | Mesh: {}", doc.size, doc.size, doc.mesh.name);
+            for (id,name,size,active) in doc.texture_set_list() {
+                println!("  Texture Set {id}: {name} ({size}×{size}){}",if active {" [active]"} else {""});
+            }
             println!("Vertices: {} | Triangles: {}", doc.mesh.vertices.len(), doc.mesh.indices.len()/3);
             println!("Layers: {} | Selected: {}", doc.layers.len(), doc.selected + 1);
             for (i, layer) in doc.layers.iter().enumerate() {
@@ -43,13 +48,19 @@ pub fn run(args: &[String]) -> Result<()> {
             exact_count(args, 2, usage)?;
             let doc=project::load(Path::new(arg(1)?))?;
             doc.validate()?;
-            println!("VALID: {} (native Kalium format v1)", arg(1)?);
+            println!("VALID: {} (native Kalium format v1/v2/v3)", arg(1)?);
         }
         "export" => {
             exact_count(args, 3, usage)?;
             let doc=project::load(Path::new(arg(1)?))?;
             let n=export::export_textures(&doc,Path::new(arg(2)?))?;
             println!("Exported {n} maps to {}",arg(2)?);
+        }
+        "export-all" => {
+            exact_count(args,3,usage)?;
+            let doc=project::load(Path::new(arg(1)?))?;
+            let n=export::export_all_texture_sets(&doc,Path::new(arg(2)?))?;
+            println!("Exported {n} maps from {} texture sets to {}",doc.texture_set_count(),arg(2)?);
         }
         "preview" => {
             exact_count(args, 3, usage)?;
