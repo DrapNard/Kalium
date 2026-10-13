@@ -1,57 +1,30 @@
-# Build and verification status — v0.2.0-alpha.5.1
+# Kalium v0.3.0-alpha.2 — verification report (source package)
 
-Maintainer / version identity: **DrapNard**.
+Author / release identity: **DrapNard**. The previously reported **35/35 passing tests belong to v0.2.0-alpha.5.2**, not to this release.
 
-This source iteration was prepared without installed `rustc`/`cargo` and without internet access to install them. In this packaging environment no Rust toolchain is installed. The user reported that 28 of the 29 tests in v0.2.0-alpha.4 passed on Arch Linux; the single failed test was `layout::tests::workspace_json_roundtrips` and its panic included `invalid type: null, expected f32`. These are *user-provided previous-version* results, not verification that this new iteration compiles. The new Rust and WGSL code have not been compiled here. The presence of a CI job is not evidence that CI passed.
+## Verified in the packaging environment
 
-## Checks performed for the downloadable package
+- `Cargo.toml` parsed as TOML, release version and license checked.
+- All Rust source files passed a **static balanced-delimiter scan** (this is not a Rust compiler/parser).
+- `git diff --check` passed before commit.
+- Legacy `.kalium` v1 demo ZIP and manifest readable by an independent ZIP/JSON parser.
+- New `examples/TwoMaterials.obj` / `.mtl` fixture supplied, with separate `Leather` and `Metal` material groups.
+- Release ZIP and Git bundle integrity verified after packaging.
 
-- [x] `Cargo.toml` parses as TOML and declares version `0.2.0-alpha.4`, AGPL-3.0-only, DrapNard and an opt-in compute feature.
-- [x] Example `.kalium` ZIP CRC check and manifest header inspection.
-- [x] Example `.kbrush` JSON format/version parsing.
-- [x] Source ZIP integrity check (`ZipFile.testzip`) and extracted source layout.
-- [x] Git bundle verified with `git bundle verify`, version tags and isolated clone check.
-- [x] `git diff --check` before commit.
-- [x] Static delimiter inspection on the edited Rust sources. This is **not** a Rust parse or compilation test.
-- [x] Workspace source contains independent 3D/UV editors, `egui_dock` dependency pinned to the egui 0.31-compatible version, eight closable panels and JSON workspace persistence.
-- [x] Source assertions for reported float literal widths and the must-use Texture Set row warning.
-- [x] The previous layer duplication, mask editing and framebuffer size tests exist; new tests cover workspace serialization and PBR channel switches.
-- [ ] **Rust compilation / unit tests:** not run; compiler not present.
-- [ ] GUI opened to verify panel placement / dragging. Not available here.
+## NOT validated here
 
-## Checks still required on a host with Rust and a GPU
+- **No Rust toolchain** installed; `cargo check`, `cargo test`, `cargo fmt` and compilation of the opt-in GPU experiment were not run.
+- No interactive rendering/painting test on a workstation.
+- No Substance `.spp` or SBSAR compatibility is claimed.
+
+## Arch Linux maintainer commands
 
 ```bash
-cargo fmt --all -- --check
-cargo check --all-targets
-cargo test --all-targets
-cargo run --release # drag, undock, close/reopen panels and restart to test persistence
-cargo check --all-targets --features gpu-experimental
-cargo test --all-targets --features gpu-experimental
-cargo run -- validate examples/Kalium-Demo.kalium
-cargo run -- uv-mask examples/Kalium-Demo.kalium ./coverage.png
-cargo run --features gpu-experimental -- gpu-stamp input.png output.png 0.5 0.5 24
-```
-
-After these, manual testing is needed in the native GUI for painting, imported UV layouts, flood-fill, masks, undo and redo. Compare GPU compute brush results with the CPU brush at multiple opacities and hard/soft edges. Compatibility with `.spp` is **not** implemented.
-
-## alpha.5.1 hotfix verification
-
-- The autosave function was rewritten as a flat, balanced function with explicit early returns.
-- The package creation process checks the source archive, Git bundle, hotfix diff and release metadata.
-- This environment does **not** provide `cargo` or `rustc`: no successful compile or unit test is asserted for alpha.5.1.
-- Upgrade instructions explicitly protect changes in a pre-existing clone and warn against reapplying stale `app.rs`.
-
-## alpha.5.2 / Layer::new parser regression
-
-The reference source `src/document.rs` has explicitly closed blocks for `impl Layer`, the `Layer::new` method, and its `Self { .. }` initializer. The user-reported broken checkout had 411 lines, whereas alpha.5.1's tracked source had 250. Before investigating parser failures, compare your working tree to `HEAD` and save a copy of the modified file. See `docs/RECOVER_WORKTREE.md`.
-
-Run on a Rust-equipped machine:
-
-```sh
+cargo fmt --all
 cargo check --all-targets
 cargo test --all-targets
 cargo check --all-targets --features gpu-experimental
+cargo run --release
 ```
 
-Packaging environment has no `rustc`/`cargo`; these commands have **not** run in this environment.
+Manual smoke: `File → Import mesh` and choose `examples/TwoMaterials.obj`, add a second Texture Set, bind the `Metal` mesh material to it in **Texture Set List**, paint different colors on each side, save `.kalium`, reopen and confirm bindings. Keep the `.mtl` file in the same folder as the OBJ. Verify the left and right materials remain distinct when switching active sets.

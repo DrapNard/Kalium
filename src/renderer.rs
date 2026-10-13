@@ -23,6 +23,34 @@ impl Material {
     pub fn image(&self,ch:Channel)->&RgbaImage {&self.maps[&ch]}
 }
 
+/// Composited channel maps for each Texture Set. The reference rasterizer uses
+/// the same material binding map as the project and the painting picker.
+pub struct MaterialLibrary {
+    active_set_id: u32,
+    sets: HashMap<u32, Material>,
+}
+
+impl MaterialLibrary {
+    pub fn from_document(doc:&Document)->Self {
+        let mut sets=HashMap::new();
+        for (id,_,_,_) in doc.texture_set_list() {
+            let maps=Channel::ALL.into_iter().filter_map(|channel| {
+                doc.composite_for_set(id,channel).map(|image|(channel,image))
+            }).collect();
+            sets.insert(id,Material{maps});
+        }
+        Self {active_set_id:doc.active_set_id,sets}
+    }
+    pub fn active(&self)->&Material {
+        // An active document always owns one Texture Set.
+        &self.sets[&self.active_set_id]
+    }
+    fn resolve(&self,material_slot:usize,bindings:&[Option<u32>])->&Material {
+        let id=bindings.get(material_slot).copied().flatten().unwrap_or(self.active_set_id);
+        self.sets.get(&id).unwrap_or_else(||self.active())
+    }
+}
+
 #[derive(Clone,Copy)]
 struct ScreenVertex {xy:Vec2,z:f32,uv:Vec2,n:Vec3,p:Vec3}
 
@@ -31,13 +59,14 @@ pub struct Viewport {
     pub height:usize,
     pub rgba:Vec<u8>,
     uv:Vec<Option<[f32;2]>>,
+    material_hits:Vec<Option<usize>>,
     pub yaw:f32,
     pub pitch:f32,
     pub distance:f32,
 }
 impl Viewport {
     pub fn new(width:usize,height:usize)->Self {
-        Self {width,height,rgba:vec![0;width*height*4],uv:vec![None;width*height],
+        Self {width,height,rgba:vec![0;width*height*4],uv:vec![None;width*height],material_hits:vec![None;width*height],
             yaw:0.42,pitch:0.25,distance:4.2}
     }
     /// Resize the software framebuffer without resetting the orbit camera.
@@ -51,6 +80,8 @@ impl Viewport {
         self.rgba.resize(width*height*4,0);
         self.uv.resize(width*height,None);
         self.uv.fill(None);
+        self.material_hits.resize(width*height,None);
+        self.material_hits.fill(None);
     }
     pub fn orbit(&mut self,dx:f32,dy:f32) {
         self.yaw += dx*0.012;
@@ -62,11 +93,27 @@ impl Viewport {
     pub fn pick(&self,x:usize,y:usize)->Option<[f32;2]> {
         if x>=self.width||y>=self.height {None}else{self.uv[y*self.width+x]}
     }
+    pub fn pick_material_slot(&self,x:usize,y:usize)->Option<usize> {
+        if x>=self.width||y>=self.height {None} else {self.material_hits[y*self.width+x]}
+    }
+
     pub fn render(&mut self,mesh:&Mesh,mat:&Material,solo:Option<Channel>) {
+        self.render_internal(mesh,mat,None,solo);
+    }
+
+    pub fn render_bound(&mut self,mesh:&Mesh,library:&MaterialLibrary,
+                        bindings:&[Option<u32>],solo:Option<Channel>) {
+        self.render_internal(mesh,library.active(),Some((library,bindings)),solo);
+    }
+
+    fn render_internal(&mut self,mesh:&Mesh,default_mat:&Material,
+                       bound:Option<(&MaterialLibrary,&[Option<u32>])>,solo:Option<Channel>) {
         let size=self.width*self.height;
         if self.rgba.len()!=size*4 {self.rgba.resize(size*4,0);}
         if self.uv.len()!=size {self.uv.resize(size,None);}
         self.uv.fill(None);
+        if self.material_hits.len()!=size {self.material_hits.resize(size,None);}
+        self.material_hits.fill(None);
         let mut depths=vec![f32::INFINITY;size];
         for y in 0..self.height {for x in 0..self.width {
             let i=(y*self.width+x)*4;
@@ -89,7 +136,10 @@ impl Viewport {
         };
         let projected:Vec<_>=mesh.vertices.iter().map(project).collect();
         let light=Vec3::new(0.3,0.83,0.55).normalize();
-        for face in mesh.indices.chunks_exact(3) {
+        for (triangle_index,face) in mesh.indices.chunks_exact(3).enumerate() {
+            let material_slot=mesh.triangle_material(triangle_index);
+            let mat=bound.map(|(library,bindings)|library.resolve(material_slot,bindings))
+                .unwrap_or(default_mat);
             let a=projected[face[0] as usize];
             let b=projected[face[1] as usize];
             let c=projected[face[2] as usize];
@@ -158,6 +208,7 @@ impl Viewport {
                 let off=idx*4;
                 self.rgba[off..off+4].copy_from_slice(&[rgb[0],rgb[1],rgb[2],255]);
                 self.uv[idx]=Some(uv.to_array());
+                self.material_hits[idx]=Some(material_slot);
             }}
         }
     }
@@ -178,6 +229,38 @@ mod tests {
         assert_eq!(view.pitch,pitch);
         assert!(view.pick(481,200).is_none());
         assert_eq!(view.rgba.len(),480*320*4);
+        assert_eq!(view.material_hits.len(),480*320);
+    }
+    #[test]
+    fn renderer_uses_bound_set_even_when_it_is_not_active() {
+        let mut doc=Document::new(64);
+        doc.mesh.materials.push("Leather".into());
+        doc.mesh.triangle_materials[0]=1;
+        doc.material_bindings.push(None);
+        doc.selected_layer_mut().pixels_mut(Channel::BaseColor,64)
+            .put_pixel(32,32,image::Rgba([10,20,30,255]));
+        let leather=doc.add_texture_set("Leather").unwrap();
+        doc.selected_layer_mut().pixels_mut(Channel::BaseColor,64)
+            .put_pixel(32,32,image::Rgba([150,50,30,255]));
+        doc.bind_material(1,Some(leather)).unwrap();
+        doc.activate_texture_set(1).unwrap();
+        let lib=MaterialLibrary::from_document(&doc);
+        assert_eq!(lib.resolve(0,&doc.material_bindings).get(Channel::BaseColor,Vec2::splat(0.5)),[10,20,30,255]);
+        assert_eq!(lib.resolve(1,&doc.material_bindings).get(Channel::BaseColor,Vec2::splat(0.5)),[150,50,30,255]);
+    }
+    #[test]
+    fn multi_material_renderer_preserves_material_pick_slots() {
+        let mut doc=Document::new(64);
+        doc.mesh.materials.push("Second".into());
+        doc.mesh.triangle_materials[0]=1;
+        doc.material_bindings.push(None);
+        let second=doc.add_texture_set("Second").unwrap();
+        doc.bind_material(1,Some(second)).unwrap();
+        let lib=MaterialLibrary::from_document(&doc);
+        let mut view=Viewport::new(300,300);
+        view.render_bound(&doc.mesh,&lib,&doc.material_bindings,None);
+        assert!(view.material_hits.iter().any(|m|*m==Some(0)));
+        assert!(view.material_hits.iter().any(|m|*m==Some(1)));
     }
     #[test]
     fn rendered_cube_has_hit_pixels() {

@@ -91,4 +91,8 @@ No unverified feature may be marked complete merely because a button or API surf
 
 ## Texture Set milestone — 2026-10-11
 
-The alpha.6 milestone is implemented as v0.3.0-alpha.1 source: independent per-set layers, resolution, persistence and exports. **Next critical milestone:** mesh material IDs in OBJ/glTF importer and per-triangle set binding in the renderer/pick buffer, followed by multi-material PBR preview and GPU stroke migration. This stage is not complete and the new source requires Cargo verification.
+The alpha.6 milestone is implemented as v0.3.0-alpha.1 source: independent per-set layers, resolution, persistence and exports. **Follow-up milestone:** texture-to-material binding completed at source level in alpha.2; native GPU PBR and seam-aware painting remain open.
+
+## Material binding milestone — 2026-10-13
+
+Kalium v0.3.0-alpha.2 adds retained OBJ/glTF material slots, a stable material-to-Texture-Set binding table, per-triangle CPU multi-material preview and material-aware UV hit testing and brush clipping. These features are implemented in source and still require a Cargo build/test pass on the maintainer's Arch machine. **Next milestone:** native GPU mesh viewport with physically based lighting, persistent texture resources and UV seam-aware painting.

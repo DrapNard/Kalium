@@ -1,6 +1,6 @@
-# Kalium native format — manifests v1, v2 and v3
+# Kalium native format — manifests v1, v2, v3 and v4
 
-The `.kalium` extension describes an independent ZIP/JSON/PNG container. It contains no Adobe binary code or resources. Version 3 introduces separate editable Texture Sets. Version 1/2 projects continue to load and are migrated in memory to one set named `Default`.
+The `.kalium` extension describes an independent ZIP/JSON/PNG container. It contains no Adobe binary code or resources. Version 3 introduces separate editable Texture Sets; version 4 adds per-triangle mesh materials and bindings. Version 1/2 projects continue to load and are migrated in memory to one set named `Default`.
 
 ## v3 example
 
@@ -47,7 +47,15 @@ The root `layers/` refers to **the active set**, whatever its `active_set_id`. E
 - **v1:** no per-layer `disabled_channels` and no Texture Set metadata; all channels enabled by default.
 - **v2:** adds `disabled_channels`.
 - **v3:** adds active and inactive Texture Set state and unique paths for set resources. Older Kalium versions cannot read it.
+- **v4:** records `mesh.materials`, `mesh.triangle_materials` and `material_bindings` keyed by stable Texture Set IDs; the legacy forms remain importable.
 - The parser rejects extra unknown ZIP files, duplicate archive names, duplicate/invalid set IDs, invalid image sizes, invalid source mesh data, and a summed decoded texture budget above 512 MiB. Up to 16 sets and 64 layers per set are supported.
 - ZIP member names use numeric IDs, not user-controlled set names. PNG exports use a sanitized name with the stable set ID to avoid traversal and collisions.
-- Unknown format fields cannot yet round-trip; preserve backups of valuable projects before migrating to v3.
-- These sets are **not yet assigned to mesh materials**. Kalium's current CPU viewport displays one active material over all triangles. There is no implied compatibility with `.spp`.
+- Unknown format fields cannot yet round-trip; preserve backups of valuable projects before migrating to v4.
+- Mesh materials can be assigned to different sets. The viewport still rasterizes on the CPU. There is no implied compatibility with `.spp`.
+
+
+## Native project v4 — material slot bindings (2026-10-13)
+
+The v4 JSON manifest adds `material_bindings: [null | texture_set_id, ...]` with one entry per imported mesh material slot. `null` falls back to the active Texture Set; a non-null value is a stable Texture Set identifier. The manifest's `mesh` adds optional `materials: [string, ...]` and `triangle_materials: [u32, ...]` (one per triangle, indexed by materials). Their absence on legacy meshes means material slot 0. The importer accepts v1–v3 manifests and defaults their binding table to all `null`.
+
+v4 validates the binding vector length, the slot indices, and references to existing Texture Sets. Existing layer PNG paths are unchanged. No SPP-specific format is written.

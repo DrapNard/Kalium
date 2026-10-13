@@ -103,6 +103,8 @@ pub struct Document {
     pub next_set_id: u32,
     /// These exclude the active set. Switching uses ownership transfer, not clones.
     pub texture_sets: Vec<TextureSet>,
+    /// Index by mesh material slot. A missing binding uses the active set.
+    pub material_bindings: Vec<Option<u32>>,
 }
 
 impl Document {
@@ -110,9 +112,36 @@ impl Document {
         let size=size.clamp(64,MAX_SIZE);
         Self {mesh:Mesh::demo_cube(),size,layers:vec![Layer::new(1,"Paint Layer",size)],
             selected:0,next_layer_id:2,active_set_id:1,active_set_name:"Default".into(),
-            next_set_id:2,texture_sets:Vec::new()}
+            next_set_id:2,texture_sets:Vec::new(),material_bindings:vec![None]}
     }
     pub fn texture_set_count(&self) -> usize { 1 + self.texture_sets.len() }
+
+    /// A material with no explicit binding uses the active set (legacy behavior).
+    pub fn texture_set_for_material(&self, material_slot:usize) -> u32 {
+        self.material_bindings.get(material_slot).copied().flatten().unwrap_or(self.active_set_id)
+    }
+
+    pub fn bind_material(&mut self, material_slot:usize, set:Option<u32>) -> Result<()> {
+        if material_slot >= self.mesh.material_count() { bail!("Unknown mesh material slot"); }
+        if let Some(id)=set {
+            if id!=self.active_set_id && !self.texture_sets.iter().any(|item|item.id==id) {
+                bail!("Unknown texture set {id}");
+            }
+        }
+        self.material_bindings.resize(self.mesh.material_count(),None);
+        self.material_bindings[material_slot]=set;
+        Ok(())
+    }
+
+    pub fn import_mesh(&mut self, mesh:Mesh) -> Result<()> {
+        mesh.validate()?;
+        self.mesh=mesh;
+        // Replacing a mesh never borrows old slot positions. Keep all newly
+        // imported materials pinned to the current set until explicitly remapped.
+        self.material_bindings=vec![Some(self.active_set_id);self.mesh.material_count()];
+        Ok(())
+    }
+
 
     pub fn texture_set_list(&self) -> Vec<(u32, String, u32, bool)> {
         let mut list = vec![(self.active_set_id, self.active_set_name.clone(), self.size, true)];
@@ -170,6 +199,9 @@ impl Document {
             .ok_or_else(||anyhow::anyhow!("No other texture set"))?;
         self.activate_texture_set(id)?;
         self.texture_sets.retain(|set| set.id != removed_id);
+        for binding in &mut self.material_bindings {
+            if *binding==Some(removed_id) { *binding=None; }
+        }
         Ok(())
     }
 
@@ -259,6 +291,14 @@ impl Document {
     }
     pub fn validate(&self)->Result<()> {
         self.mesh.validate()?;
+        if self.material_bindings.len() != self.mesh.material_count() {
+            bail!("Material binding count does not match imported mesh slots");
+        }
+        for id in self.material_bindings.iter().flatten() {
+            if *id != self.active_set_id && !self.texture_sets.iter().any(|s|s.id==*id) {
+                bail!("Material binding references missing texture set {id}");
+            }
+        }
         if self.texture_set_count()>MAX_TEXTURE_SETS { bail!("Too many texture sets"); }
         if self.active_set_id==0 || self.next_set_id<=self.active_set_id { bail!("Invalid active texture set ID"); }
         validate_texture_set(self.size,&self.layers,self.selected,self.next_layer_id,&self.active_set_name)?;
@@ -324,6 +364,34 @@ fn composite_layers(layers:&[Layer],size:u32,channel:Channel)->RgbaImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn importing_mesh_pins_existing_set_for_all_materials() {
+        let mut doc=Document::new(64);
+        let mut mesh=Mesh::demo_cube();
+        mesh.materials.push("Leather".into());
+        mesh.triangle_materials[0]=1;
+        doc.import_mesh(mesh).unwrap();
+        assert_eq!(doc.material_bindings,vec![Some(1),Some(1)]);
+        doc.add_texture_set("Metal").unwrap();
+        assert_eq!(doc.texture_set_for_material(0),1);
+        assert_eq!(doc.texture_set_for_material(1),1);
+    }
+    #[test]
+    fn material_bindings_survive_set_switch_and_removal() {
+        let mut doc=Document::new(64);
+        doc.mesh.materials.push("Leather".to_owned());
+        doc.mesh.triangle_materials[0]=1;
+        doc.material_bindings.push(None);
+        let metal=doc.add_texture_set("Metal").unwrap();
+        doc.bind_material(0,Some(metal)).unwrap();
+        doc.activate_texture_set(1).unwrap();
+        assert_eq!(doc.texture_set_for_material(0),metal);
+        assert_eq!(doc.texture_set_for_material(1),1);
+        doc.activate_texture_set(metal).unwrap();
+        doc.remove_active_texture_set().unwrap();
+        assert_eq!(doc.material_bindings[0],None);
+        doc.validate().unwrap();
+    }
     #[test]
     fn layer_constructor_initializes_empty_channels_and_opaque_mask() {
         let layer = Layer::new(99, "Fresh Paint", 64);

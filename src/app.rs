@@ -1,7 +1,7 @@
 use crate::{
     document::{BlendMode, Channel, Document},
     export,history::{History,Snapshot},mesh::Mesh,paint::{Brush,BrushMode},
-    project,renderer::{Material,Viewport},spp,ops,brush_preset,uv::UvCoverage,
+    project,renderer::{MaterialLibrary,Viewport},spp,ops,brush_preset,uv::UvCoverage,
     layout::{self,Pane},
 };
 use eframe::egui::{self,Color32,ColorImage,TextureHandle,TextureOptions,Vec2};
@@ -26,7 +26,7 @@ pub struct KaliumApp {
     view:Viewport,
     uv_coverage:Option<UvCoverage>,
     uv_clipping:bool,
-    material:Option<Material>,
+    material:Option<MaterialLibrary>,
     model_texture:Option<TextureHandle>,
     uv_texture:Option<TextureHandle>,
     paint_dirty:bool,
@@ -43,6 +43,7 @@ pub struct KaliumApp {
     asset_search:String,
     show_tool_shelf:bool,
     texture_set_name_input:String,
+    auto_switch_on_paint:bool,
 }
 
 impl KaliumApp {
@@ -66,12 +67,13 @@ impl KaliumApp {
             status:"Ready • Left drag to paint • Right drag to orbit • Scroll to zoom".into(),
             dock:layout::load_workspace(),last_layout_save:Instant::now(),
             saved_layout:Vec::new(),asset_search:String::new(),show_tool_shelf:true,
-            texture_set_name_input:"Default".into(),
+            texture_set_name_input:"Default".into(),auto_switch_on_paint:true,
         }
     }
 
     fn rebuild_coverage(&mut self) {
-        match UvCoverage::generate(&self.doc.mesh,self.doc.size) {
+        match UvCoverage::generate_for_set(&self.doc.mesh,self.doc.size,
+            &self.doc.material_bindings,self.doc.active_set_id) {
             Ok(map)=>self.uv_coverage=Some(map),
             Err(err)=>{
                 self.uv_coverage=None;
@@ -87,19 +89,20 @@ impl KaliumApp {
     }
     fn refresh_textures(&mut self,ctx:&egui::Context) {
         if self.paint_dirty || self.material.is_none() {
-            self.material=Some(Material::from_document(&self.doc));
+            self.material=Some(MaterialLibrary::from_document(&self.doc));
             self.paint_dirty=false;
             self.model_dirty=true;
             self.uv_texture=None;
         }
         if self.uv_texture.is_none() {
-            let image=self.material.as_ref().unwrap().image(self.channel);
+            let image=self.material.as_ref().unwrap().active().image(self.channel);
             let rgba=ColorImage::from_rgba_unmultiplied(
                 [image.width() as usize,image.height() as usize],image.as_raw());
             self.uv_texture=Some(ctx.load_texture("kalium-uv",rgba,TextureOptions::LINEAR));
         }
         if self.model_dirty {
-            self.view.render(&self.doc.mesh,self.material.as_ref().unwrap(),
+            self.view.render_bound(&self.doc.mesh,self.material.as_ref().unwrap(),
+                &self.doc.material_bindings,
                 if self.solo_channel {Some(self.channel)} else {None});
             let rgba=ColorImage::from_rgba_unmultiplied(
                 [self.view.width,self.view.height],&self.view.rgba);
@@ -153,7 +156,7 @@ impl KaliumApp {
                         .add_filter("3D mesh", &["obj","gltf","glb"]).pick_file() else {return Ok(None)};
                     let mesh=Mesh::from_file(&path)?;
                     self.finish_stroke();
-                    self.doc.mesh=mesh;
+                    self.doc.import_mesh(mesh)?;
                     self.rebuild_coverage();
                     self.history.clear();self.change();
                     Ok(Some(format!("Imported {}",path.display())))
@@ -666,7 +669,36 @@ impl KaliumApp {
         });
         ui.separator();
         ui.label(egui::RichText::new(format!("Mesh: {}",self.doc.mesh.name)).weak().small());
-        ui.label(egui::RichText::new("Texture sets have separate paint stacks and resolutions. The current 3D renderer applies the active set to the whole mesh; per-material binding remains to be implemented.").weak().small());
+        ui.label(egui::RichText::new("Mesh material bindings").strong());
+        ui.checkbox(&mut self.auto_switch_on_paint,"Activate bound set when painting in 3D");
+        ui.label(egui::RichText::new("Choose a Texture Set for each imported material. Unbound materials use the active set.").weak().small());
+        let options=self.doc.texture_set_list();
+        for slot in 0..self.doc.mesh.material_count() {
+            let name=self.doc.mesh.material_name(slot).to_owned();
+            let mut binding=self.doc.material_bindings.get(slot).copied().flatten();
+            ui.horizontal(|ui|{
+                ui.label(format!("{}: {}",slot,name));
+                egui::ComboBox::from_id_salt(("mesh-slot",slot))
+                    .selected_text(binding.and_then(|id|options.iter().find(|s|s.0==id).map(|s|s.1.as_str()))
+                        .unwrap_or("Active set (unbound)"))
+                    .show_ui(ui,|ui| {
+                        ui.selectable_value(&mut binding,None,"Active set (unbound)");
+                        for (id,label,_,_) in &options {
+                            ui.selectable_value(&mut binding,Some(*id),label.as_str());
+                        }
+                    });
+            });
+            let old=self.doc.material_bindings.get(slot).copied().flatten();
+            if binding!=old {
+                self.finish_stroke();
+                match self.doc.bind_material(slot,binding) {
+                    Ok(())=>{self.rebuild_coverage();self.change();self.status=format!("Material slot {slot} binding updated");}
+                    Err(err)=>self.status=format!("Cannot bind material: {err}"),
+                }
+            }
+        }
+        ui.separator();
+        ui.label(egui::RichText::new("CPU reference renderer · linked Texture Sets · GPU PBR viewport pending").weak().small());
         if ui.small_button("Import mesh…").clicked(){self.perform(Action::ImportMesh);}
     }
 
@@ -691,7 +723,7 @@ impl KaliumApp {
             ui.label(format!("Coverage: {:.1}%",100.0*map.covered_texels() as f32/(self.doc.size as f32).powi(2)));
         }
         ui.separator();
-        ui.label(egui::RichText::new("Bake mesh maps, UDIM and assignment to individual mesh materials are not yet implemented.").weak().small());
+        ui.label(egui::RichText::new("Mesh material bindings are available in Texture Set List. Baking and UDIM are pending.").weak().small());
     }
 
     fn properties(&mut self,ui:&mut egui::Ui) {
@@ -806,7 +838,7 @@ impl KaliumApp {
         if uv.iter().any(|v|!v.is_finite() || *v < 0.0 || *v>1.0) {return;}
         if self.brush.mode==BrushMode::Sample {
             let Some(material)=self.material.as_ref() else {return;};
-            let image=material.image(self.channel);
+            let image=material.active().image(self.channel);
             let x=(uv[0]*(image.width()-1) as f32).round() as u32;
             let y=(uv[1]*(image.height()-1) as f32).round() as u32;
             let sampled=image.get_pixel(x,y).0;
@@ -853,7 +885,9 @@ impl KaliumApp {
                     .sense(egui::Sense::click_and_drag()));
                 if canvas==Canvas::UV && self.show_uv_wire {
                     let painter=ui.painter_at(response.rect);
-                    for triangle in self.doc.mesh.indices.chunks_exact(3).take(2500) {
+                    for (index,triangle) in self.doc.mesh.indices.chunks_exact(3).enumerate().take(2500) {
+                        let material_slot=self.doc.mesh.triangle_material(index);
+                        if self.doc.texture_set_for_material(material_slot)!=self.doc.active_set_id {continue;}
                         let uv=[triangle[0],triangle[1],triangle[2]]
                             .map(|idx|self.doc.mesh.vertices[idx as usize].uv);
                         for i in 0..3 {
@@ -900,6 +934,24 @@ impl KaliumApp {
                                 (y*self.view.height as f32) as usize),
                         };
                         if let Some(uv)=uv {
+                            if canvas==Canvas::Model && self.auto_switch_on_paint {
+                                let hit_x=(x*self.view.width as f32) as usize;
+                                let hit_y=(y*self.view.height as f32) as usize;
+                                if let Some(slot)=self.view.pick_material_slot(hit_x,hit_y) {
+                                    let desired=self.doc.texture_set_for_material(slot);
+                                    if desired!=self.doc.active_set_id {
+                                        self.finish_stroke();
+                                        if self.doc.activate_texture_set(desired).is_ok() {
+                                            self.texture_set_name_input=self.doc.active_set_name.clone();
+                                            self.history.clear();
+                                            self.rebuild_coverage();
+                                            self.change();
+                                            self.status=format!("Painting material {} → {}",
+                                                self.doc.mesh.material_name(slot),self.doc.active_set_name);
+                                        }
+                                    }
+                                }
+                            }
                             if bucket {self.fill_uv(uv);} else {self.paint_uv(uv);}
                         }
                         else {self.previous_uv=None;}

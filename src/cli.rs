@@ -48,7 +48,7 @@ pub fn run(args: &[String]) -> Result<()> {
             exact_count(args, 2, usage)?;
             let doc=project::load(Path::new(arg(1)?))?;
             doc.validate()?;
-            println!("VALID: {} (native Kalium format v1/v2/v3)", arg(1)?);
+            println!("VALID: {} (native Kalium format v1/v2/v3/v4)", arg(1)?);
         }
         "export" => {
             exact_count(args, 3, usage)?;

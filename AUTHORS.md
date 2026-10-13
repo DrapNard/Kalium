@@ -20,6 +20,9 @@ Kalium follows Semantic Versioning for release numbering and uses pre-release id
 
 - `v0.2.0-alpha.5.1` — workspace autosave parser hotfix, 2026-10-11.
 
+- `v0.3.0-alpha.1` — multiple independent Texture Sets and `.kalium` v3, 2026-10-11.
+- `v0.3.0-alpha.2` — mesh material slots, CPU multi-material preview and `.kalium` v4, 2026-10-13.
+
 Until v1.0, feature formats and APIs may change, but format migrations should not silently discard data.
 
 Recommended Git commands for the maintainer after testing locally:

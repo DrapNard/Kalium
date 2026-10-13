@@ -20,13 +20,26 @@ pub struct UvCoverage {
 impl UvCoverage {
     pub fn generate(mesh: &Mesh, size: u32) -> Result<Self> {
         if !(64..=4096).contains(&size) { bail!("UV coverage dimension must be between 64 and 4096"); }
+        Self::generate_filtered(mesh,size,None)
+    }
+    /// Only UVs of triangles assigned to the selected Texture Set are paintable.
+    pub fn generate_for_set(mesh:&Mesh,size:u32,bindings:&[Option<u32>],active_id:u32) -> Result<Self> {
+        Self::generate_filtered(mesh,size,Some((bindings,active_id)))
+    }
+    fn generate_filtered(mesh:&Mesh,size:u32,filter:Option<(&[Option<u32>],u32)>)->Result<Self> {
+        if !(64..=4096).contains(&size) { bail!("UV coverage dimension must be between 64 and 4096"); }
         mesh.validate()?;
         let mut cells = vec![0u8; (size as usize)*(size as usize)];
         let edge = |p: Vec2, q: Vec2, r: Vec2| -> f32 {
             (r.x-p.x)*(q.y-p.y) - (r.y-p.y)*(q.x-p.x)
         };
         let mut raster_samples = 0u64;
-        for triangle in mesh.indices.chunks_exact(3) {
+        for (triangle_index,triangle) in mesh.indices.chunks_exact(3).enumerate() {
+            if let Some((bindings,active_id))=filter {
+                let slot=mesh.triangle_material(triangle_index);
+                let assigned=bindings.get(slot).copied().flatten().unwrap_or(active_id);
+                if assigned!=active_id {continue;}
+            }
             let pixel_uv = |index: u32| Vec2::from_array(mesh.vertices[index as usize].uv)
                 * ((size-1) as f32);
             let a=pixel_uv(triangle[0]);
@@ -86,7 +99,7 @@ mod tests {
             Vertex {position:[0.,0.,0.],normal:[0.,0.,1.],uv:[0.25,0.25]},
             Vertex {position:[1.,0.,0.],normal:[0.,0.,1.],uv:[0.75,0.25]},
             Vertex {position:[0.,1.,0.],normal:[0.,0.,1.],uv:[0.25,0.75]},
-        ],indices:vec![0,1,2]}
+        ],indices:vec![0,1,2],materials:vec![],triangle_materials:vec![]}
     }
     #[test]
     fn coverage_excludes_empty_uv_space() {
@@ -101,6 +114,15 @@ mod tests {
         let mut mesh=small_triangle();mesh.indices.swap(1,2);
         let mask=UvCoverage::generate(&mesh,64).unwrap();
         assert!(mask.contains_uv([0.35,0.35]));
+    }
+    #[test]
+    fn coverage_follows_texture_set_binding() {
+        let mut mesh=Mesh::demo_cube();
+        mesh.materials.push("Second".into());
+        mesh.triangle_materials[0]=1;
+        let filtered=UvCoverage::generate_for_set(&mesh,128,&[None,Some(2)],1).unwrap();
+        let full=UvCoverage::generate(&mesh,128).unwrap();
+        assert!(filtered.covered_texels()<full.covered_texels());
     }
     #[test]
     fn invalid_size_is_rejected() {

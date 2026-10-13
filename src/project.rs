@@ -1,5 +1,5 @@
 //! Native .kalium projects are versioned ZIP archives.
-//! v3 adds independent texture sets while preserving v1/v2 import.
+//! v4 adds mesh material bindings while preserving v1/v2/v3 import.
 //! Unknown ZIP data is rejected rather than silently discarded during a save.
 use crate::document::{BlendMode,Channel,Document,Layer,TextureSet,MAX_LAYERS,MAX_SIZE,MAX_TEXTURE_SETS,MAX_DECODED_BYTES};
 use crate::mesh::Mesh;
@@ -14,7 +14,7 @@ struct Manifest {
     format:String,
     version:u32,
     mesh:Mesh,
-    // Legacy root layout is retained as the active set in v3.
+    // Legacy root layout is retained as the active set in v3 and v4.
     size:u32,
     selected:usize,
     next_layer_id:u32,
@@ -23,6 +23,7 @@ struct Manifest {
     #[serde(default)] active_set_name:String,
     #[serde(default)] next_set_id:u32,
     #[serde(default)] texture_sets:Vec<SetManifest>,
+    #[serde(default)] material_bindings:Vec<Option<u32>>,
 }
 
 #[derive(Serialize,Deserialize)]
@@ -89,11 +90,12 @@ fn write_layers(writer:&mut ZipWriter<File>,opts:FileOptions,set_id:Option<u32>,
 pub fn save(doc:&Document,path:&Path)->Result<()> {
     doc.validate()?;
     let manifest=Manifest {
-        format:"Kalium Project".into(),version:3,mesh:doc.mesh.clone(),
+        format:"Kalium Project".into(),version:4,mesh:doc.mesh.clone(),
         size:doc.size,selected:doc.selected,next_layer_id:doc.next_layer_id,
         layers:layer_manifests(&doc.layers),
         active_set_id:doc.active_set_id,active_set_name:doc.active_set_name.clone(),
         next_set_id:doc.next_set_id,
+        material_bindings:doc.material_bindings.clone(),
         texture_sets:doc.texture_sets.iter().map(|set|SetManifest {
             id:set.id,name:set.name.clone(),size:set.size,selected:set.selected,
             next_layer_id:set.next_layer_id,layers:layer_manifests(&set.layers),
@@ -185,8 +187,14 @@ pub fn load(path:&Path)->Result<Document> {
     let limit=1+MAX_TEXTURE_SETS*MAX_LAYERS*(Channel::ALL.len()+2);
     if zip.len()>limit {bail!("Project contains too many ZIP entries");}
     let manifest:Manifest=serde_json::from_slice(&read_entry(&mut zip,"manifest.json",48*1024*1024)?)?;
-    if manifest.format!="Kalium Project" || !matches!(manifest.version,1|2|3) {
+    if manifest.format!="Kalium Project" || !matches!(manifest.version,1|2|3|4) {
         bail!("Unsupported Kalium project version");
+    }
+    if manifest.version<4 && !manifest.material_bindings.is_empty() {
+        bail!("Legacy project unexpectedly contains material binding metadata");
+    }
+    if manifest.version==4 && manifest.material_bindings.len()!=manifest.mesh.material_count() {
+        bail!("Material binding count does not match mesh");
     }
     if manifest.version<3 && (!manifest.texture_sets.is_empty() || manifest.active_set_id!=0) {
         bail!("Legacy project contains unexpected texture set metadata");
@@ -197,7 +205,7 @@ pub fn load(path:&Path)->Result<Document> {
     account_layers(&mut valid,&mut decoded_bytes,None,manifest.size,&manifest.layers)?;
     if manifest.texture_sets.len()>=MAX_TEXTURE_SETS {bail!("Too many texture sets");}
     let mut set_ids=HashSet::new();
-    if manifest.version==3 {
+    if manifest.version>=3 {
         if manifest.active_set_id==0 || manifest.next_set_id<=manifest.active_set_id {
             bail!("Invalid active texture set identifier");
         }
@@ -224,11 +232,13 @@ pub fn load(path:&Path)->Result<Document> {
     }
     let mut doc=Document::new(manifest.size);
     doc.mesh=manifest.mesh;
+    doc.material_bindings=if manifest.version>=4 {manifest.material_bindings}
+        else {vec![None; doc.mesh.material_count()]};
     doc.size=manifest.size;
     doc.selected=manifest.selected;
     doc.next_layer_id=manifest.next_layer_id;
     doc.layers=load_layers(&mut zip,None,manifest.size,manifest.layers)?;
-    if manifest.version==3 {
+    if manifest.version>=3 {
         doc.active_set_id=manifest.active_set_id;
         doc.active_set_name=manifest.active_set_name;
         doc.next_set_id=manifest.next_set_id;
@@ -296,6 +306,21 @@ mod tests {
         restored.validate().unwrap();
     }
 
+    #[test]
+    fn mesh_material_bindings_roundtrip_v4() {
+        let mut doc=Document::new(64);
+        let second=doc.add_texture_set("Leather").unwrap();
+        doc.mesh.materials.push("Glove".into());
+        doc.mesh.triangle_materials[0]=1;
+        doc.material_bindings=vec![Some(second),None];
+        let path=path("material-bindings");
+        save(&doc,&path).unwrap();
+        let loaded=load(&path).unwrap();
+        std::fs::remove_file(path).ok();
+        assert_eq!(loaded.material_bindings,vec![Some(second),None]);
+        assert_eq!(loaded.mesh.triangle_material(0),1);
+        assert_eq!(loaded.mesh.material_name(1),"Glove");
+    }
     #[test]
     fn legacy_v1_manifest_defaults_to_enabled_channels() {
         let json=r#"{"id":1,"name":"Legacy","visible":true,"opacity":1.0,"blend":"Normal","channels":["BaseColor"]}"#;

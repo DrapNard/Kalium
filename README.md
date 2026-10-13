@@ -4,7 +4,15 @@
 
 Kalium is an independent texture-painting application aiming for interoperability with Adobe Substance 3D Painter and its asset ecosystem. Kalium is **not** an Adobe product and is not affiliated with Adobe.
 
-> **CURRENT STATUS: v0.3.0-alpha.1 / DRAPNARD SOURCE ALPHA.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. The previous v0.2.0-alpha.5.2 release passed **35/35 tests** on the maintainer's Arch machine. Changes in v0.3.0-alpha.1 have **not yet been compiled or run in this packaging environment**; the new unit tests require validation on a Rust-equipped machine.
+> **CURRENT STATUS: v0.3.0-alpha.2 / DRAPNARD SOURCE ALPHA.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. The previous v0.2.0-alpha.5.2 release passed **35/35 tests** on the maintainer's Arch machine. Changes in v0.3.0-alpha.2 have **not yet been compiled or run in this packaging environment**; the new unit tests require validation on a Rust-equipped machine.
+
+## Material slots and multiple Texture Sets (alpha.2)
+
+Kalium now preserves per-triangle material IDs from OBJ (`.mtl`) and glTF/GLB when importing a mesh. The **Texture Set List** pane includes **Mesh material bindings** where you can assign an editable set to each source material. An unbound material follows the active set. Click a surface with a bound material while painting to select its set automatically (toggle in the same pane).
+
+Try it without downloading any model: **File → Import OBJ** and select `examples/TwoMaterials.obj` (keep `TwoMaterials.mtl` alongside it). Kalium initially binds all new mesh materials to the active set. Add a second Texture Set and bind **Metal** to the new set; **Leather** stays bound to the original set, even when you switch active sets. The two halves now display independently editable materials. The UV overlay/clipping follows the active set, and project save writes `.kalium` manifest **v4**. Earlier versions remain readable, but old Kalium builds will not open v4 projects. Make a backup before resaving.
+
+The 3D viewport still uses a **CPU software rasterizer**, not a new GPU PBR pipeline. `.spp` editing, Smart Materials and baking remain unsupported.
 
 ## Current features
 
@@ -28,20 +36,20 @@ Kalium is an independent texture-painting application aiming for interoperabilit
 - Native `.kbrush` JSON brush presets, with supplied Soft Painter and Hard Detail examples.
 - **Headless CLI** to inspect/validate/export/editable-project-preview and export UV coverage masks without launching the graphical UI.
 - **Experimental opt-in GPU compute stamp** (WGSL / wgpu; CLI only via `--features gpu-experimental`; not yet integrated into the realtime editor and not validated on hardware).
-- **Multiple editable Texture Sets** with independent resolutions, layers, masks, PBR channel switches and stable set IDs. Sets are not yet assigned to individual mesh materials; the active set previews across the whole mesh.
-- Native, documented, layered **`.kalium`** v3 format, ZIP/JSON/PNG including embedded mesh and all Texture Sets; backward-compatible loading of v1/v2.
+- **Multiple editable Texture Sets** with independent resolutions, layers, masks, PBR channel switches and stable set IDs. Imported mesh material slots can be explicitly bound to Texture Sets in the Texture Set List pane; the CPU viewport previews them simultaneously.
+- Native, documented, layered **`.kalium`** v4 format, ZIP/JSON/PNG including embedded mesh, material-to-set bindings and all Texture Sets; backward-compatible loading of v1/v2/v3.
 - Export 8 individual PBR channel PNG maps, BaseColor+Alpha, packed ORM (Occlusion/Roughness/Metallic), and Unity metallic/smoothness texture, for either the active set or every set into individual named folders.
 - Configurable texture size 256, 512, 1024, 2048, or 4096 (nearest-neighbor resampling).
 - `.spp` **signature check only** (HDF5 identification, when applicable). This is **not `.spp` import**.
 - No authentication, cloud services, AI generation, telemetry, or subscriptions.
 
-### Texture Sets (v0.3.0-alpha.1)
+### Texture Sets (v0.3.0-alpha.2)
 
 **Texture Set List** now has an **Add set** button, a per-set selector, a rename field and a guarded remove button. Switching sets is a zero-copy transfer of texture buffers, and clears brush Undo/Redo rather than allowing history collisions with identically numbered layers in other sets. **Texture Set Settings** edits the active set's resolution independently. `File → Export active set PBR textures` preserves the old export workflow; `File → Export all texture sets` creates numbered, sanitized subfolders.
 
-`.kalium` manifest **v3** saves inactive sets under `texture_sets/<set id>/layers/<layer id>/...` and keeps the active set's image files under the legacy `layers/...` path, while older v1/v2 documents continue to open. Limits: 16 sets, 64 layers per set, 512 MiB decoded texture budget. A project saved as v3 cannot be opened by older Kalium versions; **back up your project before migrating it**.
+`.kalium` manifest **v4** saves material bindings and the inactive sets under `texture_sets/<set id>/layers/<layer id>/...` and keeps the active set's image files under the legacy `layers/...` path, while older v1/v2/v3 documents continue to open. Limits: 16 sets, 64 layers per set, 512 MiB decoded texture budget. A project saved as v4 cannot be opened by older Kalium versions; **back up your project before migrating it**.
 
-**Limitation:** the OBJ/glTF importer currently merges mesh primitives without retaining material IDs. This release provides independent editing and exporting of sets but not per-triangle material assignments or multiple simultaneous materials in the viewport. Do not treat it as full Substance Painter Texture Set parity.
+**Limitations:** material names and slots are imported but Substance procedural graphs, shading models and source texture files are not. The multi-material viewport remains a CPU reference rasterizer, not a native PBR GPU pipeline. Do not treat this as full Substance Painter parity.
 
 ### Workspace serialization and channel switches (v0.2.0-alpha.5)
 

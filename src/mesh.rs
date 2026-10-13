@@ -18,6 +18,12 @@ pub struct Mesh {
     pub name: String,
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
+    /// Material slots in source mesh order. Empty means legacy single-material mesh.
+    #[serde(default)]
+    pub materials: Vec<String>,
+    /// One material-slot index per triangle. Empty means all triangles use slot 0.
+    #[serde(default)]
+    pub triangle_materials: Vec<u32>,
 }
 
 impl Mesh {
@@ -43,7 +49,7 @@ impl Mesh {
             }
             indices.extend_from_slice(&[base,base+1,base+2,base,base+2,base+3]);
         }
-        Self { name: "Kalium demo cube".into(), vertices, indices }
+        Self { name: "Kalium demo cube".into(), vertices, indices, materials: vec!["Default".into()], triangle_materials: vec![0;12] }
     }
 
     pub fn from_file(path: &Path) -> Result<Self> {
@@ -56,15 +62,23 @@ impl Mesh {
     }
 
     fn from_obj(path: &Path) -> Result<Self> {
-        let (models, _) = tobj::load_obj(path, &tobj::LoadOptions {
+        let (models, source_materials) = tobj::load_obj(path, &tobj::LoadOptions {
             triangulate: true,
             single_index: true,
             ..Default::default()
         }).with_context(|| format!("Opening {}", path.display()))?;
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
+        let mut materials:Vec<String> = source_materials.unwrap_or_default().iter()
+            .enumerate().map(|(index,m)| {
+                if m.name.trim().is_empty() { format!("Material {}",index+1) }
+                else { m.name.clone() }
+            }).collect();
+        let mut triangle_materials = Vec::new();
         for model in models {
             let m = model.mesh;
+            let material_index = m.material_id.filter(|i| *i < materials.len()).map(|i| i as u32).unwrap_or(u32::MAX);
+            triangle_materials.extend(std::iter::repeat(material_index).take(m.indices.len() / 3));
             let offset = vertices.len() as u32;
             let vertex_count = m.positions.len() / 3;
             for i in 0..vertex_count {
@@ -79,7 +93,8 @@ impl Mesh {
             }
             indices.extend(m.indices.into_iter().map(|i| offset + i));
         }
-        let mut mesh = Self { name: path.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_else(||"Imported Mesh".into()), vertices, indices };
+        Self::finish_material_slots(&mut materials,&mut triangle_materials);
+        let mut mesh = Self { name: path.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_else(||"Imported Mesh".into()), vertices, indices, materials, triangle_materials };
         mesh.finish_import()?;
         Ok(mesh)
     }
@@ -89,20 +104,26 @@ impl Mesh {
             .with_context(|| format!("Importing glTF {}", path.display()))?;
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
+        let mut triangle_materials = Vec::new();
+        let mut materials:Vec<String> = gltf.materials().enumerate().map(|(i, m)| {
+            m.name().filter(|s| !s.trim().is_empty()).map(str::to_owned)
+                .unwrap_or_else(|| format!("Material {}", i + 1))
+        }).collect();
         let scenes: Vec<_> = gltf.default_scene().map(|s| vec![s]).unwrap_or_else(|| gltf.scenes().collect());
         for scene in scenes {
             for node in scene.nodes() {
-                Self::read_gltf_node(node, Mat4::IDENTITY, &buffers, &mut vertices, &mut indices)?;
+                Self::read_gltf_node(node, Mat4::IDENTITY, &buffers, &mut vertices, &mut indices, &mut triangle_materials)?;
             }
         }
-        let mut mesh = Self { name: path.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_else(||"Imported Mesh".into()), vertices, indices };
+        Self::finish_material_slots(&mut materials,&mut triangle_materials);
+        let mut mesh = Self { name: path.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_else(||"Imported Mesh".into()), vertices, indices, materials, triangle_materials };
         mesh.finish_import()?;
         Ok(mesh)
     }
 
     fn read_gltf_node(
         node: gltf::Node<'_>, parent: Mat4,
-        buffers: &[gltf::buffer::Data], vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>,
+        buffers: &[gltf::buffer::Data], vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, triangle_materials: &mut Vec<u32>,
     ) -> Result<()> {
         let transform = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
         if let Some(mesh) = node.mesh() {
@@ -127,13 +148,27 @@ impl Mesh {
                         uv: uv.get(i).copied().unwrap_or([0.0,0.0]),
                     });
                 }
+                let material_index = primitive.material().index().map(|i| i as u32).unwrap_or(u32::MAX);
+                triangle_materials.extend(std::iter::repeat(material_index).take(ids.len() / 3));
                 indices.extend(ids.into_iter().map(|i| offset+i));
             }
         }
         for child in node.children() {
-            Self::read_gltf_node(child, transform, buffers, vertices, indices)?;
+            Self::read_gltf_node(child, transform, buffers, vertices, indices, triangle_materials)?;
         }
         Ok(())
+    }
+
+    /// Uses the actual source material slots, adding a Default slot only if a
+    /// triangle has no material assigned. u32::MAX is an internal import sentinel.
+    fn finish_material_slots(materials:&mut Vec<String>, triangle_materials:&mut [u32]) {
+        if materials.is_empty() || triangle_materials.contains(&u32::MAX) {
+            let index=materials.len() as u32;
+            materials.push("Default".to_owned());
+            for slot in triangle_materials {
+                if *slot==u32::MAX { *slot=index; }
+            }
+        }
     }
 
     fn finish_import(&mut self) -> Result<()> {
@@ -163,9 +198,29 @@ impl Mesh {
         Ok(())
     }
 
+    pub fn material_count(&self) -> usize { self.materials.len().max(1) }
+
+    pub fn material_name(&self, slot: usize) -> &str {
+        self.materials.get(slot).map(String::as_str).unwrap_or("Default")
+    }
+
+    pub fn triangle_material(&self, triangle: usize) -> usize {
+        self.triangle_materials.get(triangle).copied().unwrap_or(0) as usize
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.vertices.is_empty() || self.indices.is_empty() || self.indices.len()%3!=0 {
             bail!("Model is empty or not made of triangles");
+        }
+        if !self.triangle_materials.is_empty() && self.triangle_materials.len() != self.indices.len()/3 {
+            bail!("Material slot count must match triangle count");
+        }
+        if self.material_count() > 256 { bail!("Mesh exceeds 256 material slots"); }
+        if self.materials.iter().any(|name| name.len() > 256 || name.contains('\0')) {
+            bail!("Invalid mesh material name");
+        }
+        if self.triangle_materials.iter().any(|slot| (*slot as usize) >= self.material_count()) {
+            bail!("Triangle references an unknown material slot");
         }
         if self.indices.len()/3 > MAX_TRIANGLES {bail!("Model exceeds the {} triangle safety limit",MAX_TRIANGLES);}
         for i in &self.indices { if *i as usize >= self.vertices.len() { bail!("Invalid mesh index {i}"); } }
@@ -187,6 +242,28 @@ mod tests {
         mesh.validate().unwrap();
         assert_eq!(mesh.indices.len(),36);
         assert!(mesh.vertices.iter().all(|v| v.uv.iter().all(|n| (0.0..=1.0).contains(n))));
+    }
+    #[test]
+    fn obj_import_keeps_source_material_slots() {
+        let dir=std::env::temp_dir().join(format!("kalium-mtl-test-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let obj=dir.join("demo.obj");
+        std::fs::write(dir.join("demo.mtl"),"newmtl Metal\nKd 0.5 0.5 0.5\nnewmtl Leather\nKd 0.4 0.3 0.2\n").unwrap();
+        std::fs::write(&obj, "mtllib demo.mtl\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nusemtl Metal\nf 1/1 2/2 3/3\nusemtl Leather\nf 1/1 3/3 4/4\n").unwrap();
+        let mesh=Mesh::from_file(&obj).unwrap();
+        assert_eq!(mesh.materials,vec!["Metal".to_owned(),"Leather".to_owned()]);
+        assert_eq!(mesh.triangle_materials,vec![0,1]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+    #[test]
+    fn mesh_material_slots_are_validated() {
+        let mut mesh = Mesh::demo_cube();
+        mesh.triangle_materials[0] = 1;
+        assert!(mesh.validate().is_err());
+        mesh.materials.push("Leather".into());
+        mesh.validate().unwrap();
+        mesh.triangle_materials.pop();
+        assert!(mesh.validate().is_err());
     }
     #[test]
     fn reject_bad_triangle_index() {

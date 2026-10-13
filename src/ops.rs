@@ -165,7 +165,7 @@ mod flood_tests {
             Vertex{position:[0.,0.,0.],normal:[0.,0.,1.],uv:[0.1,0.1]},
             Vertex{position:[1.,0.,0.],normal:[0.,0.,1.],uv:[0.7,0.1]},
             Vertex{position:[0.,1.,0.],normal:[0.,0.,1.],uv:[0.1,0.7]},
-        ],indices:vec![0,1,2]};
+        ],indices:vec![0,1,2],materials:vec![],triangle_materials:vec![]};
         let uv=UvCoverage::generate(&mesh,64).unwrap();
         let mut d=Document::new(64);
         let b=Brush::default();

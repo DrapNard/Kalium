@@ -169,7 +169,7 @@ mod uv_masked_tests {
             Vertex{position:[0.,0.,0.],normal:[0.,0.,1.],uv:[0.1,0.1]},
             Vertex{position:[1.,0.,0.],normal:[0.,0.,1.],uv:[0.6,0.1]},
             Vertex{position:[0.,1.,0.],normal:[0.,0.,1.],uv:[0.1,0.6]},
-        ],indices:vec![0,1,2]};
+        ],indices:vec![0,1,2],materials:vec![],triangle_materials:vec![]};
         let coverage=UvCoverage::generate(&mesh,64).unwrap();
         let mut doc=Document::new(64);
         let brush=Brush{radius:25,opacity:1.,hardness:1.,..Brush::default()};

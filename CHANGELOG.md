@@ -1,3 +1,22 @@
+## v0.3.0-alpha.2 — 2026-10-13 — DrapNard
+
+**Mesh material slots and Texture Set bindings (CPU reference implementation).**
+This iteration extends Kalium’s existing multi-set project system to the model surface. Not compiled in the packaging environment; run the Rust test suite on a developer machine.
+
+### Added
+- OBJ `.mtl` and glTF material slot names/indices are retained per triangle on import.
+- A material-to-Texture-Set binding table in the Texture Set List pane, with explicit unbound behavior.
+- The reference CPU viewport composites different editable Texture Sets on different triangles in one draw and records each pixel’s material slot for picking.
+- Painting a bound surface can automatically activate its Texture Set (configurable). The UV overlay and UV clipping follow the active set.
+- `.kalium` manifest **v4** saves the material bindings; v1–v3 project import remains supported. The old 3D CPU rasterizer and headless CLI remain in place.
+- Small two-material OBJ/MTL fixture, model/import, compositor, binding, and v4 round-trip regression tests.
+
+### Limitations
+- This is **not** a native GPU PBR viewport. The existing software rasterizer remains the reference. The standalone experimental WGSL stamp is unchanged.
+- No UDIM, Smart Materials, `.spp` editable round-trip, or full Substance Painter parity.
+- Material-bound strokes do not yet project across UV seams. An unbound slot follows the active set, as labeled in the UI.
+- This iteration has **not** been compiled or executed in the packaging environment. No test pass count is claimed for alpha.2.
+
 ## v0.3.0-alpha.1 — 2026-10-11 — DrapNard
 
 **Multiple independent Texture Sets and native project format v3.** This update is source-level and has not been compiled in the packaging environment. The user reported **35/35 passing tests for v0.2.0-alpha.5.2**; new changes still require testing.

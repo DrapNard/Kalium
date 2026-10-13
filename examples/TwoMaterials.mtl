@@ -1,0 +1,5 @@
+# Kalium procedural test fixture
+newmtl Leather
+Kd 0.4 0.2 0.1
+newmtl Metal
+Kd 0.6 0.6 0.6
