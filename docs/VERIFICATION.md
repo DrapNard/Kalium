@@ -14,7 +14,7 @@ The dirty Linux worktree passed:
 - CLI validation/preview/export smoke checks and the same-mesh mesh-map bake smoke described in `docs/roadmap/session-handoff.md`.
 - Blender 5.2.2 import, PBR map-link, save and reopen smoke using `scripts/qa/blender_import_smoke.py`.
 
-These checks describe the current source tree, not a packaged release. Commit `12bc283` tracks `Cargo.lock`; commit `28a5555` includes the source cleanup for the rustfmt and strict-Clippy gates. The working checkout passes all listed commands. The full command set from an isolated clone of `28a5555` remains to be run. The configured origin is a local bundle and hosted CI has not run.
+These checks describe the current source tree, not a packaged release. Commit `12bc283` tracks `Cargo.lock`; commit `28a5555` includes the source cleanup for the rustfmt and strict-Clippy gates. An isolated clone at `7883e51` passed `cargo fmt --all -- --check`, `cargo test --locked --all-targets` (186/186), strict Clippy, GPU-experimental feature compilation, and `git diff --check`. The configured origin is a local bundle and hosted CI has not run.
 
 ## Earlier packaging checks
 
