@@ -1,6 +1,6 @@
 # QA test and acceptance matrix
 
-Updated 2026-10-18. The latest 193-test result is from the current Linux worktree; the preceding clean clone `1316e71` passed 192 tests. GUI and hardware acceptance remain separate.
+Updated 2026-10-18. The 193-test result was reproduced from isolated clean clone `88c5ea1`. GUI and hardware acceptance remain separate.
 
 ## Commands run
 
