@@ -1,6 +1,6 @@
 # QA test and acceptance matrix
 
-Updated 2026-10-18. Commit `88c5ea1` passed from an isolated clean clone with 193 tests. The current worktree adds an AO CLI image-output integration test and has 194 passing tests; clean-clone verification is pending. GUI and hardware acceptance remain separate.
+Updated 2026-10-18. Commit `9759b4f` passed from an isolated clean clone with 194 tests. GUI and hardware acceptance remain separate.
 
 ## Commands run
 
