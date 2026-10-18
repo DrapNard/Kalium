@@ -1,6 +1,6 @@
-# Kalium native format — manifests v1, v2, v3 and v4
+# Kalium native format — manifests v1 through v6
 
-The `.kalium` extension describes an independent ZIP/JSON/PNG container. It contains no Adobe binary code or resources. Version 3 introduces separate editable Texture Sets; version 4 adds per-triangle mesh materials and bindings. Version 1/2 projects continue to load and are migrated in memory to one set named `Default`.
+The `.kalium` extension describes an independent ZIP/JSON/PNG container. It contains no Adobe binary code or resources. Version 3 introduces separate editable Texture Sets; version 4 adds per-triangle mesh materials and bindings; version 5 adds the `Detail` blend mode for reoriented Normal composition; version 6 adds a stable project UUID. Versions 1–5 continue to load; saves write v6.
 
 ## v3 example
 
@@ -50,7 +50,7 @@ The root `layers/` refers to **the active set**, whatever its `active_set_id`. E
 - **v4:** records `mesh.materials`, `mesh.triangle_materials` and `material_bindings` keyed by stable Texture Set IDs; the legacy forms remain importable.
 - The parser rejects extra unknown ZIP files, duplicate archive names, duplicate/invalid set IDs, invalid image sizes, invalid source mesh data, and a summed decoded texture budget above 512 MiB. Up to 16 sets and 64 layers per set are supported.
 - ZIP member names use numeric IDs, not user-controlled set names. PNG exports use a sanitized name with the stable set ID to avoid traversal and collisions.
-- Unknown format fields cannot yet round-trip; preserve backups of valuable projects before migrating to v4.
+- Unknown JSON fields at supported manifest levels are retained through load/save. Unknown ZIP payload files are rejected to avoid lossy saves. Preserve backups before migrating valuable projects to a newer manifest version.
 - Mesh materials can be assigned to different sets. The viewport still rasterizes on the CPU. There is no implied compatibility with `.spp`.
 
 
@@ -59,3 +59,12 @@ The root `layers/` refers to **the active set**, whatever its `active_set_id`. E
 The v4 JSON manifest adds `material_bindings: [null | texture_set_id, ...]` with one entry per imported mesh material slot. `null` falls back to the active Texture Set; a non-null value is a stable Texture Set identifier. The manifest's `mesh` adds optional `materials: [string, ...]` and `triangle_materials: [u32, ...]` (one per triangle, indexed by materials). Their absence on legacy meshes means material slot 0. The importer accepts v1–v3 manifests and defaults their binding table to all `null`.
 
 v4 validates the binding vector length, the slot indices, and references to existing Texture Sets. Existing layer PNG paths are unchanged. No SPP-specific format is written.
+
+## Native project v5 — Detail Normal layer blending (2026-10-18)
+
+Version 5 adds `Detail` to the layer `blend` enum. For the Normal channel, the compositor weights the top tangent-space detail normal against neutral `(0, 0, 1)` using pixel alpha × layer opacity × mask, then applies reoriented normal mapping (RNM) to the accumulated normal. For other channels, `Detail` behaves like `Normal`. Older versions cannot decode projects containing the new enum value; v5 introduced the `Detail` encoding and remains readable in v6. The v1–v4 readers remain supported.
+
+
+## Native project v6 — Stable project identity (2026-10-18)
+
+Version 6 writes a non-nil UUID in the root `project_id` manifest field. The UUID remains stable across saves and is reserved for associating recovery journals with the correct project and saved baseline; the current framing layer checks this UUID and a bounded SHA-256 of the saved archive. Save As to a distinct project path creates a new identity; a regular save preserves it. When a v1–v5 project is loaded, Kalium assigns an in-memory UUID; the identity becomes persistent when the migrated project is saved as v6. Older versions do not contain this identity field.

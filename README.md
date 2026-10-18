@@ -4,15 +4,15 @@
 
 Kalium is an independent texture-painting application aiming for interoperability with Adobe Substance 3D Painter and its asset ecosystem. Kalium is **not** an Adobe product and is not affiliated with Adobe.
 
-> **CURRENT STATUS: v0.3.0-alpha.2 / DRAPNARD SOURCE ALPHA.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. The previous v0.2.0-alpha.5.2 release passed **35/35 tests** on the maintainer's Arch machine. Changes in v0.3.0-alpha.2 have **not yet been compiled or run in this packaging environment**; the new unit tests require validation on a Rust-equipped machine.
+> **CURRENT STATUS: v0.3.0-alpha.2 / DRAPNARD SOURCE ALPHA.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. On 2026-10-18, the current worktree passed formatting, strict Clippy, all-target compilation, optional GPU feature compilation, and `cargo test --locked --all-targets` (**186/186 tests**). Headless egui interaction tests cover layer drag reorder, while desktop GUI/GPU behavior has not been visually validated. Recovery journals cover committed brush, fill, clear, mask, supported layer property and reorder edits and offer Restore/Discard on reopen; unsupported edits such as layer creation/removal still pause recovery until the next save. The source-alpha state and dirty worktree are not a production release.
 
 ## Material slots and multiple Texture Sets (alpha.2)
 
 Kalium now preserves per-triangle material IDs from OBJ (`.mtl`) and glTF/GLB when importing a mesh. The **Texture Set List** pane includes **Mesh material bindings** where you can assign an editable set to each source material. An unbound material follows the active set. Click a surface with a bound material while painting to select its set automatically (toggle in the same pane).
 
-Try it without downloading any model: **File → Import OBJ** and select `examples/TwoMaterials.obj` (keep `TwoMaterials.mtl` alongside it). Kalium initially binds all new mesh materials to the active set. Add a second Texture Set and bind **Metal** to the new set; **Leather** stays bound to the original set, even when you switch active sets. The two halves now display independently editable materials. The UV overlay/clipping follows the active set, and project save writes `.kalium` manifest **v4**. Earlier versions remain readable, but old Kalium builds will not open v4 projects. Make a backup before resaving.
+Try it without downloading any model: **File → Import OBJ** and select `examples/TwoMaterials.obj` (keep `TwoMaterials.mtl` alongside it). Kalium initially binds all new mesh materials to the active set. Add a second Texture Set and bind **Metal** to the new set; **Leather** stays bound to the original set, even when you switch active sets. The two halves now display independently editable materials. The UV overlay/clipping follows the active set, and project save writes `.kalium` manifest **v6**, which includes a stable project UUID as groundwork for future identity-bound recovery. Versions 1–5 remain readable and receive a new identity when migrated; older Kalium builds will not open v6 projects. Make a backup before resaving.
 
-The 3D viewport still uses a **CPU software rasterizer**, not a new GPU PBR pipeline. `.spp` editing, Smart Materials and baking remain unsupported.
+The 3D viewport still uses a **CPU software rasterizer**, not a new GPU PBR pipeline. `.spp` editing and Smart Materials remain unsupported; baking is limited to the experimental standalone world-normal/position CLI command described below.
 
 ## Current features
 
@@ -20,42 +20,45 @@ The 3D viewport still uses a **CPU software rasterizer**, not a new GPU PBR pipe
 - **Dockable professional workspace**: draggable tabbed Assets, 3D Viewport, 2D/UV editor, Texture Set List, Layers, Texture Set Settings, Properties and Brush Studio. Panels can be resized, undocked into native floating windows, closed and restored via View.
 - **Side-by-side 3D and UV viewports**, inspired by the supplied layout reference (without copying branding or bundling the reference image). The CPU 3D framebuffer automatically resizes with its dock panel while preserving the orbit camera and UV picking buffer.
 - Narrow, optional vertical tool shelf, channel/layer toolbar, B/E/I/G tool shortcuts (ignored when typing), and a non-destructive brush-cursor preview.
-- Duplicate layers with independent PBR data and masks; invert/reset a layer mask and clear the active channel using the sparse pixel Undo/Redo history.
+- Add, duplicate, remove, and reorder layers; rename layers and edit visibility, opacity, blend mode, and channel enablement with Undo/Redo. Detail Normal layers use reoriented normal mapping; texture imports are undoable and preserve prior history. Removed layers that exceed the 96 MiB history budget are rejected before deletion.
+- Save and recover a manual per-user project checkpoint from the File menu; checkpoint recovery is explicit and requires Save As. Timed autosave is not implemented yet.
 - Per-user workspace layout persistence in the platform config directory, independently from project files; View → Restore default workspace.
 - **DrapNard** release identity; native format and project owner information documented in [AUTHORS.md](AUTHORS.md).
 - 3D textured-mesh viewport, orbit camera (right-drag), zoom (scroll), triangle-based UV hit-testing, painting on the actual mesh surface.
 - 2D UV painting workspace, optional UV wireframe overlay. UV-polygon clipping driven by a bounded triangle rasterizer; empty atlas areas are protected by default.
 - Model imports: Wavefront **OBJ**, **glTF**, **GLB** (triangulated primitives with first UV set; transforms baked into the in-memory mesh).
 - Eight PBR paint channels: **Base Color, Roughness, Metallic, Normal, Height, Emissive, Opacity, Ambient Occlusion**.
+- Normal-channel strokes blend and renormalize signed vectors. The optional **Detail Normal** layer mode combines tangent-space detail with accumulated normals.
 - Paint, erase, and paint white/black on layer masks; opacity, brush radius, hardness, spacing, U-axis mirroring, connected brush strokes.
 - 4-connected flood-fill tool, configurable tolerance, optional UV-polygon clipping and sparse undo history.
 - Editable layer stack with reordering, opacity, visibility, simple Normal/Multiply/Add blending and per-layer masks.
-- Sparse, bounded Undo/Redo for brush strokes and full-channel fills where within the 96 MiB history budget; keyboard shortcuts.
+- Sparse, bounded Undo/Redo for brush strokes, full-channel fills, layer-stack commands and layer properties, within a 96 MiB history budget; keyboard shortcuts.
 - Fill/clear current channel or layer mask using the active tool mode, plus an eyedropper that samples the active channel in either 2D or 3D.
 - Import PNG/JPEG textures into a new editable layer on the selected PBR channel.
 - Native `.kbrush` JSON brush presets, with supplied Soft Painter and Hard Detail examples.
 - **Headless CLI** to inspect/validate/export/editable-project-preview and export UV coverage masks without launching the graphical UI.
+- Experimental headless mesh-map bake for same-mesh world normals and normalized positions, with coverage and encoding metadata. It does not provide an artist-facing high-to-low workflow or persist maps in the project.
 - **Experimental opt-in GPU compute stamp** (WGSL / wgpu; CLI only via `--features gpu-experimental`; not yet integrated into the realtime editor and not validated on hardware).
 - **Multiple editable Texture Sets** with independent resolutions, layers, masks, PBR channel switches and stable set IDs. Imported mesh material slots can be explicitly bound to Texture Sets in the Texture Set List pane; the CPU viewport previews them simultaneously.
-- Native, documented, layered **`.kalium`** v4 format, ZIP/JSON/PNG including embedded mesh, material-to-set bindings and all Texture Sets; backward-compatible loading of v1/v2/v3.
-- Export 8 individual PBR channel PNG maps, BaseColor+Alpha, packed ORM (Occlusion/Roughness/Metallic), and Unity metallic/smoothness texture, for either the active set or every set into individual named folders.
+- Native, documented, layered **`.kalium`** v6 format, ZIP/JSON/PNG including embedded mesh, material-to-set bindings and all Texture Sets; backward-compatible loading of v1–v5.
+- Export 8 individual PBR channel PNG maps, BaseColor+Alpha, packed ORM (Occlusion/Roughness/Metallic), and Unity metallic/smoothness texture, for either the active set or every set into individual named folders. Export settings choose OpenGL (+Y) or DirectX (−Y) Normal maps and optional UV edge padding.
 - Configurable texture size 256, 512, 1024, 2048, or 4096 (nearest-neighbor resampling).
 - `.spp` **signature check only** (HDF5 identification, when applicable). This is **not `.spp` import**.
 - No authentication, cloud services, AI generation, telemetry, or subscriptions.
 
 ### Texture Sets (v0.3.0-alpha.2)
 
-**Texture Set List** now has an **Add set** button, a per-set selector, a rename field and a guarded remove button. Switching sets is a zero-copy transfer of texture buffers, and clears brush Undo/Redo rather than allowing history collisions with identically numbered layers in other sets. **Texture Set Settings** edits the active set's resolution independently. `File → Export active set PBR textures` preserves the old export workflow; `File → Export all texture sets` creates numbered, sanitized subfolders.
+**Texture Set List** now has an **Add set** button, a per-set selector, a rename field and a guarded remove button. Switching sets is a zero-copy transfer of texture buffers, and clears brush Undo/Redo rather than allowing history collisions with identically numbered layers in other sets. **Texture Set Settings** edits the active set's resolution independently. `File → Export active set PBR textures` preserves the old export workflow; `File → Export all texture sets` creates numbered, sanitized subfolders and offers optional UV-aware edge padding.
 
-`.kalium` manifest **v4** saves material bindings and the inactive sets under `texture_sets/<set id>/layers/<layer id>/...` and keeps the active set's image files under the legacy `layers/...` path, while older v1/v2/v3 documents continue to open. Limits: 16 sets, 64 layers per set, 512 MiB decoded texture budget. A project saved as v4 cannot be opened by older Kalium versions; **back up your project before migrating it**.
+`.kalium` manifest **v6** saves project identity and material bindings and the inactive sets under `texture_sets/<set id>/layers/<layer id>/...` and keeps the active set's image files under the legacy `layers/...` path, while v1–v5 documents continue to open. v5 adds the Detail Normal layer blend mode; v6 adds a stable project UUID reserved for associating journal recovery with a saved baseline. Old Kalium versions cannot read v6. Limits: 16 sets, 64 layers per set, 512 MiB decoded texture budget. **Back up your project before migrating it**.
 
 **Limitations:** material names and slots are imported but Substance procedural graphs, shading models and source texture files are not. The multi-material viewport remains a CPU reference rasterizer, not a native PBR GPU pipeline. Do not treat this as full Substance Painter parity.
 
 ### Workspace serialization and channel switches (v0.2.0-alpha.5)
 
-The `egui_dock` layout JSON round-trip failure (`invalid type: null, expected f32`) is addressed by normalizing uninitialized floating-point rectangle coordinates during workspace serialization and during loading old layout files. No need to delete your existing workspace. This fix is source-level until re-tested with Cargo.
+The `egui_dock` layout JSON round-trip failure (`invalid type: null, expected f32`) is addressed by normalizing uninitialized floating-point rectangle coordinates during workspace serialization and when loading old layout files. Automated tests cover layout round-tripping and repair of old files with null geometry.
 
-The **Layers** panel now has individual channel enable switches, comparable to Painter's per-layer material channel controls. Disabled channels are composited/exported as if that layer had no influence on the channel, but painted pixel data is retained. `.kalium` saves now emit manifest **v2** and still load **v1** documents.
+The **Layers** panel has individual channel enable switches. Disabled channels are composited/exported as if that layer had no influence on the channel, while painted pixel data is retained. Channel switches and other layer properties participate in bounded Undo/Redo alongside brush strokes, fills, layer add/duplicate/remove/reorder, and masks. The current `.kalium` format is manifest **v6**; it continues to load v1–v5 documents.
 
 ### Dockable UI workspace (v0.2.0-alpha.5)
 
@@ -67,7 +70,7 @@ Use **View → Show / hide panels** to reopen closed panes, **View → Restore d
 
 The v0.2.0-alpha.4 default layout gives additional width to the 3D and 2D workspaces. Existing layout files will **not** be overwritten by this update; use **View → Restore default workspace** to switch to the new proportions.
 
-The Assets panel currently exposes the **implemented brush presets and texture-import operations**. It does not pretend to ship the materials shown in the design reference. Texture Set List now offers independent editable sets, but mesh-material binding, Substance preset parsing and Smart Materials are not implemented yet.
+The Assets panel exposes the implemented brush presets and texture-import operations. It does not ship the materials shown in the design reference. Texture Set List supports independent editable sets and mesh-material bindings; Substance preset parsing and Smart Materials are not implemented.
 
 ### Experimental compute brush
 
@@ -78,13 +81,14 @@ cargo run --features gpu-experimental -- gpu-stamp in.png out.png 0.5 0.5 30
 
 # Export a reference mesh UV coverage mask (white=paintable)
 cargo run -- uv-mask examples/Kalium-Demo.kalium coverage.png
+cargo run -- bake-mesh-maps examples/Kalium-Demo.kalium ./baked-maps [texture-set-id]
 ```
 
 See [docs/GPU_COMPUTE.md](docs/GPU_COMPUTE.md). The experimental module creates its own GPU device and copies buffers back to the CPU, so it is not yet suitable for interactive real-time painting.
 
 ### Rendering limitation (important)
 
-The GUI uses wgpu, but the **3D mesh rasterizer is currently CPU-based**, with a simple preview shader and approximate PBR lighting, not full production PBR nor GPU compute painting. The CPU renderer generates a triangle UV hit-buffer and textured preview that is uploaded as a GPU image. Full `wgpu` native model rendering, compute-stroke projection, baking and UDIM streaming are future work.
+The GUI uses wgpu, but the **3D mesh rasterizer is currently CPU-based**. Its reference shader uses linear-light Cook–Torrance GGX direct lighting, normal maps, emissive and an environment-free ambient fill; it has no image-based lighting, configurable studio environment, controlled visual acceptance or GPU mesh rendering. The CPU renderer generates a triangle UV hit-buffer and textured preview that is uploaded as a GPU image. The experimental mesh-map command bakes same-mesh world normals and normalized positions only; an internal tested high-to-low projection primitive is not exposed as an artist workflow until shared mesh alignment and cage controls are persisted. AO, curvature, dilation, project persistence and GUI baking remain future work. Native `wgpu` model rendering, compute-stroke projection and UDIM streaming are future work.
 
 ### Start Kalium
 
@@ -106,7 +110,7 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-This source release has *not* completed those checks in the generation environment. Run `cargo build` before relying on it for production work.
+Formatting, strict Clippy, all-target compilation, optional GPU feature compilation, and unit tests passed on the current worktree on 2026-10-18. GUI startup, graphics hardware behavior, cross-platform builds, and downstream-engine imports have not been verified. Perform the documented platform/visual checks before relying on it for production work.
 
 ### Headless CLI
 
@@ -138,7 +142,7 @@ SPP inspection checks only for an HDF5 signature. **It cannot read or save Subst
 | Edit mask | Tool → Mask + / Mask − |
 | Save editable project | Ctrl+S |
 | Open project | Ctrl+O |
-| Undo / redo paint stroke | Ctrl+Z / Ctrl+Y |
+| Undo / redo paint or layer edit | Ctrl+Z / Ctrl+Y |
 | Import OBJ / GLTF / GLB | File → Import |
 | Import editable PNG/JPEG layer | File → Import PNG/JPEG as layer |
 | Fill current channel / mask | Brush Studio → Fill selected channel / mask |
@@ -168,16 +172,17 @@ MyTexture.kalium
 
 It's intentionally independent of proprietary formats, editable, and inspectable without Kalium. See [docs/FORMAT.md](docs/FORMAT.md) and [docs/BRUSH_PRESETS.md](docs/BRUSH_PRESETS.md).
 
-### What v0.2 does **not** yet provide
+### Current limitations
 
-- Native GPU mesh rasterization, GPU brush projection/compute and physically accurate PBR.
+- Native GPU mesh rasterization, GPU brush projection/compute or production PBR rendering. The CPU rasterizer remains the reference implementation.
 - `.spp`, `.sppr`, `.sbsar` editing or any Adobe format round-trip. The formats remain a clean-room interoperability research goal.
-- Baking, UDIM, material graphs, multi-texture-set workflows or professional-grade tablet pressure/tilt.
-- A completed local Rust build/test run. This sandbox cannot fetch Rust or compile dependencies. Please run `cargo test` and `cargo build` before using this on real work.
+- Baking, UDIM, material graphs, layer groups/fill layers, or professional-grade tablet pressure/tilt.
+- Base Color and Emissive brush stamps and layer composites use linear light. Normal strokes and ordinary layers operate on normalized vectors; Detail Normal layers use RNM. Scalar channels blend data values directly. The separate `Kalium_BaseColor_Alpha.png` takes alpha from the Opacity channel's red value; downstream engine expectations remain open.
+- GUI-driven visual acceptance, downstream-engine imports, cross-platform builds and release packages. The current Linux source tree passes its documented local checks; see [the QA matrix](docs/qa/test-matrix.md).
 
 ### Roadmap toward a complete Painter replacement
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). The targets include native GPU painting, real PBR rendering, UV and UDIM tooling, multi-material Texture Sets, mesh baking, procedural graph materials, smart materials and masks, asset browsing, brush engines and Substance format interoperability.
+See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). The remaining targets include native GPU painting, production PBR rendering, UV and UDIM tooling, mesh baking, procedural graph materials, smart materials and masks, asset browsing, and further brush workflows.
 
 ## License
 

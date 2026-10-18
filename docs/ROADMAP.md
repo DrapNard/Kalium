@@ -1,6 +1,8 @@
 # Kalium roadmap — full Substance Painter-class target
 
-This document describes **future development goals**, not current features. `v0.2.0-alpha.2` is a source prototype, not a complete v1.0 product.
+This document describes the long-term development program, not current features. The current source is `v0.3.0-alpha.2`, not a complete v1.0 product. The authoritative current implementation and verification status is in `docs/roadmap/implementation-status.md`.
+
+As of 2026-10-18, the worktree passes 186 unit tests, formatting, strict Clippy, all-target compilation and optional GPU-feature compilation. The active worktree is still a prototype; desktop GUI interaction, graphics hardware, downstream-engine imports and release packaging remain unverified. See `docs/qa/test-matrix.md` for current counts and scope.
 
 ## v0.1 — first editable foundation (this delivery)
 
@@ -14,7 +16,7 @@ This document describes **future development goals**, not current features. `v0.
 - [x] Native editable ZIP project format
 - [x] Basic undo/redo for brush strokes
 - [x] PNG and packed PBR exports
-- [x] Unit tests for basics (not run in this environment)
+- [x] Unit tests for basics (historical milestone; see the current QA matrix for present results)
 - [ ] Confirm build on Linux/macOS/Windows and fix any integration issues
 
 ## v0.2-alpha.1 — source iteration (2026-10-10)
@@ -95,4 +97,4 @@ The alpha.6 milestone is implemented as v0.3.0-alpha.1 source: independent per-s
 
 ## Material binding milestone — 2026-10-13
 
-Kalium v0.3.0-alpha.2 adds retained OBJ/glTF material slots, a stable material-to-Texture-Set binding table, per-triangle CPU multi-material preview and material-aware UV hit testing and brush clipping. These features are implemented in source and still require a Cargo build/test pass on the maintainer's Arch machine. **Next milestone:** native GPU mesh viewport with physically based lighting, persistent texture resources and UV seam-aware painting.
+Kalium v0.3.0-alpha.2 adds retained OBJ/glTF material slots, a stable material-to-Texture-Set binding table, per-triangle CPU multi-material preview and material-aware UV hit testing and brush clipping. The current worktree has a passing Linux Cargo test/build record; GUI and GPU behavior remain unverified. **Next milestones:** imported-mesh picking/stroke acceptance, native GPU viewport research, persistent GPU texture resources and UV seam-aware painting.

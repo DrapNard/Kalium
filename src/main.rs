@@ -2,27 +2,33 @@
 // A GUI-only Windows launcher can be added as a separate binary later.
 
 mod app;
-mod layout;
+#[allow(dead_code)] // High-to-low projection awaits a persisted mesh-alignment contract.
+mod bake;
 mod brush_preset;
 mod cli;
-mod ops;
 mod document;
 mod export;
+#[cfg(feature = "gpu-experimental")]
+mod gpu_brush;
 mod history;
+mod layout;
 mod mesh;
+mod ops;
 mod paint;
 mod project;
+#[allow(dead_code)]
+mod recovery;
 mod renderer;
 mod spp;
 mod uv;
-#[cfg(feature="gpu-experimental")]
-mod gpu_brush;
 
 use anyhow::Result;
 
 fn main() -> Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    if !arguments.is_empty() { return cli::run(&arguments); }
+    if !arguments.is_empty() {
+        return cli::run(&arguments);
+    }
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Kalium • Artist-first 3D Painter")

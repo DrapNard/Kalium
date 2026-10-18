@@ -53,7 +53,8 @@ mod tests {
     use super::*;
     #[test]
     fn brush_roundtrip() {
-        let path = std::env::temp_dir().join(format!("kalium-{}-preset.kbrush", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("kalium-{}-preset.kbrush", std::process::id()));
         let brush = Brush::default();
         save(&brush, "Soft Pink", &path).unwrap();
         let (name, recovered) = load(&path).unwrap();
@@ -64,11 +65,15 @@ mod tests {
     }
     #[test]
     fn rejects_bad_values() {
-        let mut brush = Brush::default();
-        brush.opacity = f32::NAN;
+        let brush = Brush {
+            opacity: f32::NAN,
+            ..Brush::default()
+        };
         assert!(brush.validate().is_err());
-        brush.opacity = 1.0;
-        brush.radius = 0;
+        let brush = Brush {
+            radius: 0,
+            ..Brush::default()
+        };
         assert!(brush.validate().is_err());
     }
 }
