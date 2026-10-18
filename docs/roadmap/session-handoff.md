@@ -4,9 +4,9 @@
 
 - Date: 2026-10-18
 - Branch: `main`
-- Verified implementation commit: `28a5555` (`feat: integrate painting recovery and bake workflows`)
+- Latest verified code commit: `9759b4f` (`test: verify ambient occlusion CLI output`); an isolated clean checkout passed all gates with 194 tests. Documentation checkpoint before this handoff edit: `1fb8891`.
 - Verification checkpoint commit: `7883e51` (status and handoff update above the implementation commit).
-- Initial state: ahead of `origin/main` by 2 commits; dirty changes in 16 tracked Rust files; untracked `Cargo.lock` and `docs/roadmap/master-goal.md` already present before this checkpoint.
+- Historical starting state for this continuation: the branch contained accumulated implementation changes; `Cargo.lock` and `docs/roadmap/master-goal.md` were user-provided untracked inputs and are now tracked/retained.
 - New documentation created in this session: `docs/architecture/overview.md`, `docs/roadmap/implementation-status.md`, `docs/roadmap/decisions.md`, `docs/roadmap/agent-workboard.md`, `docs/roadmap/session-handoff.md`, `docs/research/reference-evidence.md`, and `docs/qa/test-matrix.md`.
 - Commit `12bc283` is the reviewed S0-003 slice containing only `.github/workflows/ci.yml`, `Cargo.toml`, and `Cargo.lock`. Commit `28a5555` integrates the reviewed source, tests, QA, and progress documentation.
 - This continuation adds the manual checkpoint API/UI, CPU GGX reference and its numeric/pixel tests, the Blender smoke script, and corresponding docs. The branch remains dirty and uncommitted; no files were staged.
@@ -21,13 +21,13 @@
 
 ## Stage/task status
 
-- S0–S8 remain `IN_PROGRESS`; unit checks pass, but acceptance evidence is incomplete. S9–S11 are `NOT_STARTED`; S12–S15 are `IN_PROGRESS`. See implementation status for details.
+- S0–S8 remain `IN_PROGRESS`; S9–S11 are `NOT_STARTED`; S12–S15 are `IN_PROGRESS`. Unit and headless integration checks pass, while desktop artist-workflow acceptance remains incomplete. See implementation status for details.
 - UI-001 is implemented and code-reviewed, with 2 policy tests; GUI interaction remains unverified.
 - S5-001 and S1-001 image decode bounds are implemented and verified by regression tests.
 - S1-002 headless TwoMaterials paint/save/reopen/export workflow is verified by pixel assertions.
 - S1-002 now includes actual CPU viewport material-slot picks, hit-UV coverage checks, rerendered paint visibility and the existing per-set save/reopen/export pixel assertions.
 - S2-001 analytic pixel→UV/material and overlap tests are verified in the full suite.
-- S0-002 CI fmt/Clippy steps are added; S0-003 tracks Cargo.lock and uses `--locked` in commit `12bc283`. Locked clean-clone checking and tests pass; formatting and strict-Clippy cleanup are integrated and clean-clone verified; remote CI is unavailable.
+- S0-002 CI fmt/Clippy steps are added; S0-003 tracks Cargo.lock and uses `--locked` in commit `12bc283`. Latest clean-clone checks pass; remote CI is unavailable.
 - S2-002 near-plane clipping is integrated and verified as a test slice: one/two vertices behind remain pickable with ray-oracle UV checks; fully-behind triangles produce no hits.
 - S2-003 fixes mirrored-UV tangent handedness and tests normal-map orientation plus degenerate-triangle rejection.
 - S4-001 adds preflighted resize budgeting across active and inactive texture sets; its focused and full-suite tests pass.
@@ -65,7 +65,7 @@
 
 ## Risks / open issues
 
-- Existing dirty implementation is substantial and was not comprehensively reviewed by the passing test run alone.
+- The accumulated source is committed and passes the recorded checks; a complete line-by-line review of all existing implementation is outside this slice.
 - Native save uses a sibling temp file and Open can recover a fully valid temp archive. Manual recovery checkpoints are available under the user config directory. The bounded journal is integrated for image edits with a Restore/Discard prompt, while broader mutation events, background syncing, desktop modal validation and process-kill evidence remain open.
 - Texture resolution changes now preflight the full decoded-byte budget before allocation and leave inactive sets untouched; structural edits disable the current journal until the user saves a new baseline.
 - Fuzz coverage for decoder and project archive edge cases remains incomplete.
@@ -78,8 +78,8 @@
 
 ## Next three concrete edits
 
-1. Wire committed brush/fill/mask patches into bounded journal records, then cover structural, set and mesh mutation events before enabling startup restore/keep/discard recovery UI.
-2. Benchmark 1K/2K/4K paint strokes and validate egui partial texture updates in a desktop session; the region compositor is covered by byte-equality tests but has no latency measurement.
-3. Keep the CI command set green after each code slice; the current verified clean clone is `7883e51`. The Cargo.lock is tracked since `12bc283`; remote CI is unavailable because the configured origin is a local bundle.
+1. Extend the recovery event contract in `src/recovery.rs` and app emitters in `src/app.rs` for layer create/remove/duplicate and Texture Set or mesh/binding changes. Add stable-ID replay tests that preserve selection and decoded-memory bounds; unsupported events must continue to fail closed.
+2. Design an AO bake action for `src/app.rs` with explicit bounded settings, cancellation/progress and a nonblocking execution path; preserve the tested CLI and PNG contract in `src/cli.rs`. Do not claim GUI acceptance until exercised on a display-capable machine.
+3. Run the end-to-end artist workflow and recovery modal on a desktop with working graphics, then measure 1K/2K/4K brush latency and partial texture uploads. The current environment lacks a compositor and working Vulkan device; hosted CI is unavailable because origin is a local bundle.
 
 REA/Ghidra evidence: none used. Legal/source review was unnecessary for these ordinary engineering tasks.
