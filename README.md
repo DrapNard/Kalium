@@ -4,7 +4,7 @@
 
 Kalium is an independent texture-painting application aiming for interoperability with Adobe Substance 3D Painter and its asset ecosystem. Kalium is **not** an Adobe product and is not affiliated with Adobe.
 
-> **CURRENT STATUS: v0.3.0-alpha.2 / DRAPNARD SOURCE ALPHA.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. On 2026-10-18, the current worktree passed formatting, strict Clippy, all-target compilation, optional GPU feature compilation, and `cargo test --locked --all-targets` (**186/186 tests**). Headless egui interaction tests cover layer drag reorder, while desktop GUI/GPU behavior has not been visually validated. Recovery journals cover committed brush, fill, clear, mask, supported layer property and reorder edits and offer Restore/Discard on reopen; unsupported edits such as layer creation/removal still pause recovery until the next save. The source-alpha state and dirty worktree are not a production release.
+> **CURRENT STATUS: v0.3.0-alpha.2 / DRAPNARD SOURCE ALPHA.** This repository is a *source prototype*, **NOT** a complete Substance Painter replacement or a feature-complete 1.0. In particular, `.spp` import/export, Substance brush presets and SBSAR execution are **not yet implemented**. On 2026-10-18, the current worktree passes formatting, strict Clippy, all-target compilation, optional GPU feature compilation, and `cargo test --locked --all-targets` (**191/191 tests**). Headless egui interaction tests cover layer drag reorder, while desktop GUI/GPU behavior has not been visually validated. Recovery journals cover committed brush, fill, clear, mask, supported layer property, reorder, and selection edits and offer Restore/Discard on reopen; oversized patches and unsupported edits such as layer creation/removal disable recovery until the next save. The source-alpha state and dirty worktree are not a production release.
 
 ## Material slots and multiple Texture Sets (alpha.2)
 
@@ -12,7 +12,7 @@ Kalium now preserves per-triangle material IDs from OBJ (`.mtl`) and glTF/GLB wh
 
 Try it without downloading any model: **File → Import OBJ** and select `examples/TwoMaterials.obj` (keep `TwoMaterials.mtl` alongside it). Kalium initially binds all new mesh materials to the active set. Add a second Texture Set and bind **Metal** to the new set; **Leather** stays bound to the original set, even when you switch active sets. The two halves now display independently editable materials. The UV overlay/clipping follows the active set, and project save writes `.kalium` manifest **v6**, which includes a stable project UUID as groundwork for future identity-bound recovery. Versions 1–5 remain readable and receive a new identity when migrated; older Kalium builds will not open v6 projects. Make a backup before resaving.
 
-The 3D viewport still uses a **CPU software rasterizer**, not a new GPU PBR pipeline. `.spp` editing and Smart Materials remain unsupported; baking is limited to the experimental standalone world-normal/position CLI command described below.
+The 3D viewport still uses a **CPU software rasterizer**, not a new GPU PBR pipeline. `.spp` editing and Smart Materials remain unsupported; baking is limited to standalone CLI commands and is not saved into projects or shown in the GUI.
 
 ## Current features
 
@@ -82,13 +82,14 @@ cargo run --features gpu-experimental -- gpu-stamp in.png out.png 0.5 0.5 30
 # Export a reference mesh UV coverage mask (white=paintable)
 cargo run -- uv-mask examples/Kalium-Demo.kalium coverage.png
 cargo run -- bake-mesh-maps examples/Kalium-Demo.kalium ./baked-maps [texture-set-id]
+cargo run -- bake-ao examples/Kalium-Demo.kalium ao.png [texture-set-id] [samples] [max-distance] [seed]
 ```
 
-See [docs/GPU_COMPUTE.md](docs/GPU_COMPUTE.md). The experimental module creates its own GPU device and copies buffers back to the CPU, so it is not yet suitable for interactive real-time painting.
+See [docs/GPU_COMPUTE.md](docs/GPU_COMPUTE.md). The experimental module creates its own GPU device and copies buffers back to the CPU, so it is not yet suitable for interactive real-time painting. `bake-ao` writes a deterministic grayscale map (white=open, black=occluded), defaulting to 16 samples, max distance 1.0, and seed 0.
 
 ### Rendering limitation (important)
 
-The GUI uses wgpu, but the **3D mesh rasterizer is currently CPU-based**. Its reference shader uses linear-light Cook–Torrance GGX direct lighting, normal maps, emissive and an environment-free ambient fill; it has no image-based lighting, configurable studio environment, controlled visual acceptance or GPU mesh rendering. The CPU renderer generates a triangle UV hit-buffer and textured preview that is uploaded as a GPU image. The experimental mesh-map command bakes same-mesh world normals and normalized positions only; an internal tested high-to-low projection primitive is not exposed as an artist workflow until shared mesh alignment and cage controls are persisted. AO, curvature, dilation, project persistence and GUI baking remain future work. Native `wgpu` model rendering, compute-stroke projection and UDIM streaming are future work.
+The GUI uses wgpu, but the **3D mesh rasterizer is currently CPU-based**. Its reference shader uses linear-light Cook–Torrance GGX direct lighting, normal maps, emissive and an environment-free ambient fill; it has no image-based lighting, configurable studio environment, controlled visual acceptance or GPU mesh rendering. The CPU renderer generates a triangle UV hit-buffer and textured preview that is uploaded as a GPU image. The experimental mesh-map command bakes same-mesh world normals and normalized positions; the separate `bake-ao` command writes bounded same-mesh ambient occlusion. An internal tested high-to-low projection primitive is not exposed as an artist workflow until shared mesh alignment and cage controls are persisted. Curvature, dilation, project persistence and GUI baking remain future work. Native `wgpu` model rendering, compute-stroke projection and UDIM streaming are future work.
 
 ### Start Kalium
 
@@ -121,6 +122,7 @@ cargo run -- validate examples/Kalium-Demo.kalium
 cargo run -- export examples/Kalium-Demo.kalium ./exported
 cargo run -- export-all examples/Kalium-Demo.kalium ./exported-by-set
 cargo run -- preview examples/Kalium-Demo.kalium ./preview.png
+cargo run -- bake-ao examples/Kalium-Demo.kalium ./ambient-occlusion.png
 cargo run -- brush-inspect examples/Soft-Painter.kbrush
 cargo run -- spp-inspect path/to/owned-project.spp
 ```

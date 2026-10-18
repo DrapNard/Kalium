@@ -84,6 +84,8 @@ pub enum DocumentEvent {
         layer_id: u32,
         to_index: usize,
     },
+    /// Select a layer by stable ID within one Texture Set.
+    LayerSelection { set_id: u32, layer_id: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +188,11 @@ impl DocumentEvent {
                 let layer = layers.remove(from_index);
                 layers.insert(*to_index, layer);
                 *selected = unique_layer_index(layers, selected_id)?;
+                return Ok(());
+            }
+            Self::LayerSelection { set_id, layer_id } => {
+                let (layers, selected) = layers_and_selection_for_set(doc, *set_id)?;
+                *selected = unique_layer_index(layers, *layer_id)?;
                 return Ok(());
             }
             Self::LayerImagePatch { .. } => {}

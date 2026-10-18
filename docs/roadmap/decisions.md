@@ -112,7 +112,7 @@
 
 **Decision:** native manifest v6 stores a non-nil UUID on `Document`; v1–v5 load by assigning a new in-memory UUID, which becomes stable when the migrated project is saved. Save As to a distinct project path forks the identity; an ordinary save keeps it.
 **Reason:** recovery records must be associated with the project and saved baseline that produced them, rather than a single global checkpoint or path alone.
-**Limits:** Save As branches get separate journal identities. Recovery covers committed image edits and selected layer properties/order; remaining document mutations disable the journal until the next save so partial recovery is never offered. An unsaved legacy project has no persisted identity in its original archive until saved as v6.
+**Limits:** Save As branches get separate journal identities. Recovery covers committed image edits and selected layer properties/order/selection; oversized patches and remaining document mutations disable the journal until the next save so partial recovery is never offered. An unsaved legacy project has no persisted identity in its original archive until saved as v6.
 **Evidence:** v4 migration writes a stable UUID through v6 save/reopen; the bundled v1 fixture loads with an assigned identity; nil v6 UUID is rejected. Journal v2 validates UUID, schema, and the bounded SHA-256 archive fingerprint.
 
 

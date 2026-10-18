@@ -23,6 +23,7 @@ pub fn run(args: &[String]) -> Result<()> {
         kalium preview <project.kalium> <preview.png>\n\
         kalium uv-mask <project.kalium> <coverage.png>\n\
         kalium bake-mesh-maps <project.kalium> <output-directory> [texture-set-id]\n\
+        kalium bake-ao <project.kalium> <output.png> [texture-set-id] [samples] [max-distance] [seed]\n\
         kalium spp-inspect <project.spp>\n\
         kalium brush-inspect <preset.kbrush>\n\
         kalium gpu-stamp <in.png> <out.png> <u> <v> <radius>  [requires gpu-experimental feature]\n\
@@ -197,6 +198,62 @@ pub fn run(args: &[String]) -> Result<()> {
                 output_dir.display()
             );
         }
+        "bake-ao" => {
+            if args.len() < 3 || args.len() > 7 {
+                bail!("Expected a project, output PNG, and optional Texture Set ID, samples, max distance, and seed.\n{usage}");
+            }
+            let doc = project::load(Path::new(arg(1)?))?;
+            let (set_id, samples, max_distance, seed) = parse_ao_args(args, doc.active_set_id)?;
+            let Some((_, _, size, _)) = doc
+                .texture_set_list()
+                .into_iter()
+                .find(|(id, _, _, _)| *id == set_id)
+            else {
+                bail!("Unknown Texture Set ID {set_id}");
+            };
+            let remaining_budget = MAX_DECODED_BYTES.saturating_sub(doc.decoded_bytes());
+            // Account for the encoded RGBA output image as well as the primitive's
+            // own maps and acceleration structure in the shared decoded-memory cap.
+            let output_bytes = u64::from(size)
+                .checked_mul(u64::from(size))
+                .and_then(|texels| texels.checked_mul(4))
+                .ok_or_else(|| anyhow!("Ambient occlusion output size overflow"))?;
+            let working_budget = remaining_budget.saturating_sub(output_bytes);
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let ao = bake::bake_ambient_occlusion(
+                &doc.mesh,
+                bake::AmbientOcclusionBakeOptions {
+                    size,
+                    bindings: &doc.material_bindings,
+                    active_set_id: set_id,
+                    sample_count: samples,
+                    max_ray_distance: max_distance,
+                    seed,
+                    working_budget_bytes: working_budget,
+                },
+                &cancel,
+            )?;
+            let mut image = image::RgbaImage::new(size, size);
+            for (index, pixel) in image.pixels_mut().enumerate() {
+                if ao.valid[index] == 0 {
+                    *pixel = image::Rgba([0, 0, 0, 0]);
+                } else {
+                    // Grayscale convention: white is open, black is occluded.
+                    let open = (1.0 - ao.occlusion[index]).clamp(0.0, 1.0);
+                    let value = (open * 255.0).round() as u8;
+                    *pixel = image::Rgba([value, value, value, 255]);
+                }
+            }
+            image.save(arg(2)?)?;
+            println!(
+                "Baked ambient occlusion for Texture Set {set_id} ({} × {}, {} samples, {} covered texels) to {}",
+                size,
+                size,
+                samples,
+                ao.valid.iter().filter(|&&valid| valid != 0).count(),
+                arg(2)?
+            );
+        }
         "spp-inspect" => {
             exact_count(args, 2, usage)?;
             println!("{}", spp::inspect(Path::new(arg(1)?))?);
@@ -232,6 +289,39 @@ pub fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn parse_ao_args(args: &[String], active_set_id: u32) -> Result<(u32, u32, f32, u64)> {
+    if args.len() < 3 || args.len() > 7 {
+        bail!("bake-ao expects 2 to 6 arguments after the command");
+    }
+    let set_id: u32 = args
+        .get(3)
+        .map(|value| value.parse())
+        .transpose()?
+        .unwrap_or(active_set_id);
+    let samples: u32 = args
+        .get(4)
+        .map(|value| value.parse())
+        .transpose()?
+        .unwrap_or(16);
+    if !(1..=4096).contains(&samples) {
+        bail!("Ambient occlusion samples must be between 1 and 4096");
+    }
+    let max_distance: f32 = args
+        .get(5)
+        .map(|value| value.parse())
+        .transpose()?
+        .unwrap_or(1.0);
+    if !max_distance.is_finite() || max_distance <= 0.0 {
+        bail!("Ambient occlusion max distance must be finite and greater than zero");
+    }
+    let seed: u64 = args
+        .get(6)
+        .map(|value| value.parse())
+        .transpose()?
+        .unwrap_or(0);
+    Ok((set_id, samples, max_distance, seed))
+}
+
 fn exact_count(args: &[String], n: usize, usage: &str) -> Result<()> {
     if args.len() != n {
         bail!(
@@ -254,5 +344,88 @@ mod tests {
     #[test]
     fn help_is_ok() {
         assert!(run(&["--help".into()]).is_ok());
+    }
+
+    #[test]
+    fn bake_ao_defaults_and_explicit_options_parse() {
+        assert_eq!(
+            parse_ao_args(&["bake-ao".into(), "p".into(), "o".into()], 7).unwrap(),
+            (7, 16, 1.0, 0)
+        );
+        assert_eq!(
+            parse_ao_args(
+                &[
+                    "bake-ao".into(),
+                    "p".into(),
+                    "o".into(),
+                    "3".into(),
+                    "64".into(),
+                    "2.5".into(),
+                    "99".into()
+                ],
+                7
+            )
+            .unwrap(),
+            (3, 64, 2.5, 99)
+        );
+    }
+
+    #[test]
+    fn bake_ao_rejects_bad_ranges_and_values() {
+        for samples in ["0", "4097", "nope"] {
+            assert!(parse_ao_args(
+                &[
+                    "bake-ao".into(),
+                    "p".into(),
+                    "o".into(),
+                    "1".into(),
+                    samples.into()
+                ],
+                1
+            )
+            .is_err());
+        }
+        for distance in ["0", "-1", "NaN", "inf", "bad"] {
+            assert!(parse_ao_args(
+                &[
+                    "bake-ao".into(),
+                    "p".into(),
+                    "o".into(),
+                    "1".into(),
+                    "8".into(),
+                    distance.into()
+                ],
+                1
+            )
+            .is_err());
+        }
+        assert!(parse_ao_args(
+            &[
+                "bake-ao".into(),
+                "p".into(),
+                "o".into(),
+                "1".into(),
+                "8".into(),
+                "1".into(),
+                "-1".into()
+            ],
+            1
+        )
+        .is_err());
+        assert!(parse_ao_args(&["bake-ao".into(), "p".into(), "o".into(), "x".into()], 1).is_err());
+        assert!(parse_ao_args(
+            &[
+                "bake-ao".into(),
+                "p".into(),
+                "o".into(),
+                "1".into(),
+                "2".into(),
+                "1".into(),
+                "0".into(),
+                "extra".into()
+            ],
+            1
+        )
+        .is_err());
     }
 }

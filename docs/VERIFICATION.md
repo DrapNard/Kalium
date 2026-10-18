@@ -7,14 +7,14 @@ Author / source identity: **DrapNard**. This report separates the current source
 The dirty Linux worktree passed:
 
 - `cargo fmt --all -- --check` and `git diff --check`.
-- `cargo test --locked --all-targets` — 186 passed, 0 failed, including a headless egui layer-row drag/reorder interaction and save → journal append → reopen → image, layer-property and layer-order replay and Discard coverage.
+- `cargo test --locked --all-targets` — 191 passed, 0 failed, including layer-row drag/reorder, selected-layer restoration, oversized-stroke fail-closed recovery, and save → journal append → reopen → image/layer replay and Discard coverage.
 - `cargo clippy --locked --all-targets -- -D warnings`.
 - `cargo check --locked --offline --all-targets`.
 - `cargo check --locked --all-targets --features gpu-experimental` — compile only.
-- CLI validation/preview/export smoke checks and the same-mesh mesh-map bake smoke described in `docs/roadmap/session-handoff.md`.
+- CLI validation/preview/export and mesh-map smoke checks, plus `bake-ao` on the demo project (512×512 RGBA PNG; 262,144 covered texels).
 - Blender 5.2.2 import, PBR map-link, save and reopen smoke using `scripts/qa/blender_import_smoke.py`.
 
-These checks describe the current source tree, not a packaged release. Commit `12bc283` tracks `Cargo.lock`; commit `28a5555` includes the source cleanup for the rustfmt and strict-Clippy gates. An isolated clone at `7883e51` passed `cargo fmt --all -- --check`, `cargo test --locked --all-targets` (186/186), strict Clippy, GPU-experimental feature compilation, and `git diff --check`. The configured origin is a local bundle and hosted CI has not run.
+These checks describe the current source tree, not a packaged release. The current worktree includes pending integration changes and has not yet had a fresh-clone verification. Commit `12bc283` tracks `Cargo.lock`; commit `28a5555` includes the source cleanup for the rustfmt and strict-Clippy gates. An isolated clone at `7883e51` passed `cargo fmt --all -- --check`, `cargo test --locked --all-targets` (186/186), strict Clippy, GPU-experimental feature compilation, and `git diff --check`. The configured origin is a local bundle and hosted CI has not run.
 
 ## Earlier packaging checks
 

@@ -581,7 +581,20 @@ impl KaliumApp {
         if self.recovery_journal.is_none() {
             return;
         }
-        let payload = match recovery::encode_event_batch_bounded(events) {
+        let mut batch = Vec::new();
+        if batch
+            .try_reserve_exact(events.len().saturating_add(1))
+            .is_err()
+        {
+            self.disable_recovery_journal("could not reserve recovery event batch memory");
+            return;
+        }
+        batch.extend_from_slice(events);
+        batch.push(DocumentEvent::LayerSelection {
+            set_id: self.doc.active_set_id,
+            layer_id: self.doc.selected_layer().id,
+        });
+        let payload = match recovery::encode_event_batch_bounded(&batch) {
             Ok(payload) => payload,
             Err(error) => {
                 self.disable_recovery_journal(&format!("could not encode the edit: {error}"));
@@ -2166,9 +2179,9 @@ impl KaliumApp {
             StrokeCommitResult::Committed => match recovery_events {
                 Some(Some(events)) => self.append_recovery_batch(&events),
                 Some(None) => {
-                    self.status =
-                        "Committed stroke could not be recorded for crash recovery".into();
-                    self.recovery_journal = None;
+                    self.disable_recovery_journal(
+                        "committed stroke could not be encoded as recovery patches",
+                    );
                 }
                 None => {}
             },
@@ -2808,6 +2821,132 @@ mod unsaved_change_tests {
         assert!(reopened.pending_journal_recovery.is_none());
         assert!(reopened.recovery_journal.is_none());
         assert!(reopened.status.contains("recovery is paused"));
+    }
+
+    #[test]
+    fn unencodable_committed_stroke_disables_recovery_after_valid_prefix() {
+        let temp = TempProject::new();
+        let baseline = Document::new(1024);
+        let project_id = baseline.project_id;
+        project::save(&baseline, &temp.0).unwrap();
+
+        let mut app = test_app();
+        app.install_open_project(baseline, temp.0.clone(), false);
+        app.append_recovery_batch(&[crate::recovery::DocumentEvent::LayerVisibility {
+            set_id: app.doc.active_set_id,
+            layer_id: app.doc.selected_layer().id,
+            visible: false,
+        }]);
+        let mut capture = History::begin_stroke(&app.doc, Channel::BaseColor, BrushMode::Paint);
+        assert!(History::capture_stroke_rect(
+            &mut capture,
+            &app.doc,
+            0,
+            0,
+            1023,
+            1023
+        ));
+        for pixel in app
+            .doc
+            .selected_layer_mut()
+            .pixels_mut(Channel::BaseColor, 1024)
+            .pixels_mut()
+        {
+            *pixel = image::Rgba([1, 2, 3, 255]);
+        }
+        app.pending_stroke = Some(PendingStroke {
+            capture,
+            was_unsaved: false,
+        });
+        app.finish_stroke();
+
+        let journal_path = recovery_journal_path(&temp.0);
+        assert_eq!(
+            crate::recovery::scan(
+                &journal_path,
+                project_id,
+                project::file_digest(&temp.0).unwrap(),
+                1
+            )
+            .unwrap()
+            .len(),
+            1,
+            "the valid prefix remains inspectable but must no longer be offered"
+        );
+        assert!(recovery_journal_disabled_path(&journal_path).exists());
+        assert!(app.recovery_journal.is_none());
+        drop(app);
+
+        let mut reopened = test_app();
+        reopened.install_open_project(project::load(&temp.0).unwrap(), temp.0.clone(), false);
+        assert!(reopened.pending_journal_recovery.is_none());
+        assert!(reopened.recovery_journal.is_none());
+        assert!(reopened.status.contains("recovery is paused"));
+    }
+
+    #[test]
+    fn selection_after_select_then_paint_is_restored_by_stable_id() {
+        let temp = TempProject::new();
+        let mut baseline = Document::new(64);
+        baseline.add_layer().unwrap();
+        project::save(&baseline, &temp.0).unwrap();
+
+        let mut app = test_app();
+        app.install_open_project(baseline, temp.0.clone(), false);
+        app.doc.selected = 1;
+        let mut capture = History::begin_stroke(&app.doc, Channel::BaseColor, BrushMode::Paint);
+        assert!(History::capture_stroke_rect(
+            &mut capture,
+            &app.doc,
+            3,
+            4,
+            3,
+            4
+        ));
+        app.doc
+            .selected_layer_mut()
+            .pixels_mut(Channel::BaseColor, 64)
+            .put_pixel(3, 4, image::Rgba([11, 22, 33, 255]));
+        app.pending_stroke = Some(PendingStroke {
+            capture,
+            was_unsaved: false,
+        });
+        app.finish_stroke();
+        let selected_id = app.doc.selected_layer().id;
+        drop(app);
+
+        let mut reopened = test_app();
+        reopened.install_open_project(project::load(&temp.0).unwrap(), temp.0.clone(), false);
+        reopened.resolve_journal_recovery(JournalRecoveryChoice::Restore);
+        assert_eq!(reopened.doc.selected_layer().id, selected_id);
+        assert_eq!(reopened.doc.selected, 1);
+        assert_eq!(
+            reopened.doc.selected_layer().pixels[&Channel::BaseColor].get_pixel(3, 4),
+            &image::Rgba([11, 22, 33, 255])
+        );
+    }
+
+    #[test]
+    fn selection_after_select_then_reorder_is_restored_by_stable_id() {
+        let temp = TempProject::new();
+        let mut baseline = Document::new(64);
+        baseline.add_layer().unwrap();
+        baseline.add_layer().unwrap();
+        project::save(&baseline, &temp.0).unwrap();
+
+        let mut app = test_app();
+        app.install_open_project(baseline, temp.0.clone(), false);
+        app.doc.selected = 2;
+        let selected_id = app.doc.selected_layer().id;
+        assert!(app.move_layer_to(2, 0));
+        assert_eq!(app.doc.selected_layer().id, selected_id);
+        drop(app);
+
+        let mut reopened = test_app();
+        reopened.install_open_project(project::load(&temp.0).unwrap(), temp.0.clone(), false);
+        reopened.resolve_journal_recovery(JournalRecoveryChoice::Restore);
+        assert_eq!(reopened.doc.selected_layer().id, selected_id);
+        assert_eq!(reopened.doc.selected, 0);
     }
 
     #[test]
