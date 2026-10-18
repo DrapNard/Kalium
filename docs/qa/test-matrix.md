@@ -1,6 +1,6 @@
 # QA test and acceptance matrix
 
-Updated 2026-10-18. Results below apply to the current worktree, including pre-existing dirty code; they do not establish that those changes were introduced or reviewed in this task.
+Updated 2026-10-18. Results below were reproduced from isolated clean clone `9fc6f91`; GUI and hardware acceptance remain separate.
 
 ## Commands run
 

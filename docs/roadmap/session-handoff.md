@@ -15,7 +15,7 @@
 - Current dirty paths are tracked in `git status --short`; Cargo.lock and the workflow/manifest change are committed. The current implementation includes layer-row DnD, `Document::composite_region_for_set`, material-map region patching, and partial UV texture updates for touched 64×64 paint tiles.
 - Isolated clone at `7883e51` is clean and passes `cargo fmt --all -- --check`, all 186 baseline tests, strict Clippy, GPU-experimental feature compilation, and `git diff --check`. This verifies the committed formatting/lint cleanup in `28a5555`. Remote CI remains unavailable because origin is a local bundle.
 - The latest source integration adds AO CLI output and closes two recovery gaps: selected-layer replay is journaled, and an oversized committed patch disables recovery rather than exposing an incomplete older prefix. Regression tests cover both. The integrated suite is now 191/191. The `bake-ao` demo smoke writes a 512×512 RGBA PNG with 262,144 covered texels; AO output is not saved to projects.
-- At this checkpoint the AO CLI, recovery fixes and documentation updates are pending integration commit. The clean isolated clone at `7883e51` remains historical baseline evidence (186 tests); the current 191-test source integration still needs clean-clone verification.
+- Commit `9fc6f91` integrates the AO CLI and recovery fixes. A fresh isolated clone at this exact commit passed formatting, 191 tests, strict Clippy, GPU-experimental feature compilation, diff checks and clean status. Hosted CI remains unavailable because origin is a local bundle.
 
 ## Stage/task status
 

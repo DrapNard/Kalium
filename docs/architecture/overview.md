@@ -55,4 +55,4 @@ On this Linux x86_64 worktree with rustc 1.97.1 / cargo 1.97.1:
 - GUI launch, interactive visual behavior, optional GPU feature, cross-platform builds and downstream-engine imports have not been verified in this session.
 - `vulkaninfo --summary` could not create a Vulkan instance: the configured NVIDIA ICD could not load and the loader found no working drivers. Optional feature compilation is therefore not device validation.
 
-The worktree was already dirty before this documentation and UI task: 16 tracked Rust files had modifications, and `Cargo.lock` plus `docs/roadmap/master-goal.md` were untracked. These changes are preserved and not attributed to this task.
+The checks above were reproduced from an isolated clean clone at commit `9fc6f91`. GUI launch, GPU hardware and downstream application behavior remain unverified.
