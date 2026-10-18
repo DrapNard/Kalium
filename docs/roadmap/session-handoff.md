@@ -15,9 +15,9 @@
 - Current dirty paths are tracked in `git status --short`; Cargo.lock and the workflow/manifest change are committed. The current implementation includes layer-row DnD, `Document::composite_region_for_set`, material-map region patching, and partial UV texture updates for touched 64×64 paint tiles.
 - Isolated clone at `7883e51` is clean and passes `cargo fmt --all -- --check`, all 186 baseline tests, strict Clippy, GPU-experimental feature compilation, and `git diff --check`. This verifies the committed formatting/lint cleanup in `28a5555`. Remote CI remains unavailable because origin is a local bundle.
 - The latest source integration adds AO CLI output and closes two recovery gaps: selected-layer replay is journaled, and an oversized committed patch disables recovery rather than exposing an incomplete older prefix. Regression tests cover both. The integrated suite was 191/191 at that commit. The `bake-ao` demo smoke writes a 512×512 RGBA PNG with 262,144 covered texels; AO output is not saved to projects.
-- Commit `9fc6f91` integrates the AO CLI and recovery fixes. A fresh isolated clone at this exact commit passed formatting, 191 tests, strict Clippy, GPU-experimental feature compilation, diff checks and clean status. Hosted CI remains unavailable because origin is a local bundle.
+- Commit `9fc6f91` integrates the AO CLI and recovery fixes. A fresh isolated clone at that commit passed formatting, 191 tests, strict Clippy, GPU-experimental feature compilation, diff checks and clean status. Commit `1316e71` adds app-level torn-tail recovery and passes those checks with 192 tests. Hosted CI remains unavailable because origin is a local bundle.
 
-- Current follow-up changes add `restore_recovers_valid_prefix_after_torn_final_journal_frame` in `src/app.rs`. It truncates a simulated final frame, confirms Restore applies the complete visibility event but not the incomplete opacity event, then verifies the journal accepts a later append. Focused test and 192-test full suite pass; source and updated count docs are pending commit and clean-clone verification.
+- Current follow-up changes add `restore_recovers_valid_prefix_after_torn_final_journal_frame` in `src/app.rs`. It truncates a simulated final frame, confirms Restore applies the complete visibility event but not the incomplete opacity event, then verifies the journal accepts a later append. Focused test and 192-test full suite pass. Commit `1316e71` was verified from an isolated clean clone with formatting, all tests, strict Clippy, GPU-feature compilation, diff check and clean status.
 
 ## Stage/task status
 
@@ -48,7 +48,7 @@
 ## Verification run
 
 - `cargo fmt --all -- --check` — PASS.
-- `cargo test --locked --all-targets` — PASS, 192 passed / 0 failed after adding app-level torn-final-frame recovery and append-continuation coverage.
+- `cargo test --locked --all-targets` — PASS, 192 passed / 0 failed; clean-clone verification at `1316e71` also passed fmt, strict Clippy, GPU-experimental compile and diff checks.
 - `cargo clippy --locked --all-targets -- -D warnings` — PASS after stroke recovery patch extraction and replay validation.
 - `cargo fmt --all -- --check` and `git diff --check` — PASS after manifest-identity integration.
 - Earlier in this worktree, `cargo check --locked --offline --all-targets` and `cargo check --locked --all-targets --features gpu-experimental` passed (compile only).

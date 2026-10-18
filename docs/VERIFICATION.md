@@ -4,7 +4,7 @@ Author / source identity: **DrapNard**. This report separates the current source
 
 ## Current worktree checks (2026-10-18)
 
-The current Linux worktree passed:
+Commit `1316e71` was verified from an isolated clean Linux clone:
 
 - `cargo fmt --all -- --check` and `git diff --check`.
 - `cargo test --locked --all-targets` — 192 passed, 0 failed, including layer-row drag/reorder, selected-layer restoration, oversized-stroke fail-closed recovery, torn-tail prefix restore/append, and save → journal append → reopen → image/layer replay and Discard coverage.
@@ -14,7 +14,7 @@ The current Linux worktree passed:
 - CLI validation/preview/export and mesh-map smoke checks, plus `bake-ao` on the demo project (512×512 RGBA PNG; 262,144 covered texels).
 - Blender 5.2.2 import, PBR map-link, save and reopen smoke using `scripts/qa/blender_import_smoke.py`.
 
-These checks describe the current source tree, not a packaged release. Commit `9fc6f91` was cloned into an isolated checkout and passed the complete local gate sequence: formatting, 191 tests, strict Clippy, GPU-experimental compilation, diff check and clean status. Commit `12bc283` tracks `Cargo.lock`; commit `28a5555` includes the source cleanup for the rustfmt and strict-Clippy gates. An isolated clone at `7883e51` passed `cargo fmt --all -- --check`, `cargo test --locked --all-targets` (186/186), strict Clippy, GPU-experimental feature compilation, and `git diff --check`. The configured origin is a local bundle and hosted CI has not run.
+These checks describe source code, not a packaged release. Commit `1316e71` passed the complete gate sequence from a fresh isolated clone: formatting, 192 tests, strict Clippy, GPU-experimental compilation, diff check and clean status. The previous commit `9fc6f91` passed the same checks at 191 tests. Commit `12bc283` tracks `Cargo.lock`; commit `28a5555` includes the source cleanup for the rustfmt and strict-Clippy gates. An isolated clone at `7883e51` passed `cargo fmt --all -- --check`, `cargo test --locked --all-targets` (186/186), strict Clippy, GPU-experimental feature compilation, and `git diff --check`. The configured origin is a local bundle and hosted CI has not run.
 
 ## Earlier packaging checks
 
