@@ -2934,6 +2934,37 @@ mod unsaved_change_tests {
     }
 
     #[test]
+    fn complete_corrupt_journal_frame_is_rejected_without_recovery_prompt() {
+        let temp = TempProject::new();
+        let baseline = Document::new(64);
+        project::save(&baseline, &temp.0).unwrap();
+
+        let mut app = test_app();
+        app.install_open_project(baseline, temp.0.clone(), false);
+        app.append_recovery_batch(&[crate::recovery::DocumentEvent::LayerVisibility {
+            set_id: app.doc.active_set_id,
+            layer_id: app.doc.selected_layer().id,
+            visible: false,
+        }]);
+        drop(app);
+
+        let journal_path = recovery_journal_path(&temp.0);
+        let mut journal_bytes = std::fs::read(&journal_path).unwrap();
+        let last = journal_bytes
+            .last_mut()
+            .expect("journal has a header and record");
+        *last ^= 0xff;
+        std::fs::write(&journal_path, journal_bytes).unwrap();
+
+        let mut reopened = test_app();
+        reopened.install_open_project(project::load(&temp.0).unwrap(), temp.0.clone(), false);
+        assert!(reopened.pending_journal_recovery.is_none());
+        assert!(reopened.recovery_journal.is_none());
+        assert!(reopened.status.contains("journal was rejected"));
+        assert!(reopened.doc.selected_layer().visible);
+    }
+
+    #[test]
     fn selection_after_select_then_paint_is_restored_by_stable_id() {
         let temp = TempProject::new();
         let mut baseline = Document::new(64);

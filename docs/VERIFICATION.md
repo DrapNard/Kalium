@@ -4,10 +4,10 @@ Author / source identity: **DrapNard**. This report separates the current source
 
 ## Current worktree checks (2026-10-18)
 
-Commit `1316e71` was verified from an isolated clean Linux clone:
+The 192-test commit `1316e71` was verified from an isolated clean Linux clone; the latest worktree adds app-level checksum-corruption rejection and has 193 tests:
 
 - `cargo fmt --all -- --check` and `git diff --check`.
-- `cargo test --locked --all-targets` — 192 passed, 0 failed, including layer-row drag/reorder, selected-layer restoration, oversized-stroke fail-closed recovery, torn-tail prefix restore/append, and save → journal append → reopen → image/layer replay and Discard coverage.
+- `cargo test --locked --all-targets` — 193 passed, 0 failed, including layer-row drag/reorder, selected-layer restoration, oversized-stroke fail-closed recovery, torn-tail prefix restore/append, corrupt-frame rejection without a recovery prompt, and save → journal append → reopen → image/layer replay and Discard coverage.
 - `cargo clippy --locked --all-targets -- -D warnings`.
 - `cargo check --locked --offline --all-targets`.
 - `cargo check --locked --all-targets --features gpu-experimental` — compile only.
