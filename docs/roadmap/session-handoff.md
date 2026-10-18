@@ -4,15 +4,15 @@
 
 - Date: 2026-10-18
 - Branch: `main`
-- HEAD: `12bc283` (`ci: lock dependencies and enforce quality gates`)
+- HEAD: `28a5555` (`feat: integrate painting recovery and bake workflows`)
 - Initial state: ahead of `origin/main` by 2 commits; dirty changes in 16 tracked Rust files; untracked `Cargo.lock` and `docs/roadmap/master-goal.md` already present before this checkpoint.
 - New documentation created in this session: `docs/architecture/overview.md`, `docs/roadmap/implementation-status.md`, `docs/roadmap/decisions.md`, `docs/roadmap/agent-workboard.md`, `docs/roadmap/session-handoff.md`, `docs/research/reference-evidence.md`, and `docs/qa/test-matrix.md`.
-- Commit `12bc283` is a reviewed S0-003 slice containing only `.github/workflows/ci.yml`, `Cargo.toml`, and `Cargo.lock`; the working implementation remains uncommitted and must be reviewed before any additional staging.
+- Commit `12bc283` is the reviewed S0-003 slice containing only `.github/workflows/ci.yml`, `Cargo.toml`, and `Cargo.lock`. Commit `28a5555` integrates the reviewed source, tests, QA, and progress documentation.
 - This continuation adds the manual checkpoint API/UI, CPU GGX reference and its numeric/pixel tests, the Blender smoke script, and corresponding docs. The branch remains dirty and uncommitted; no files were staged.
 - The current continuation adds `src/bake.rs`, a same-mesh `bake-mesh-maps` headless command, a shared-coordinate high-to-low projection primitive, a bounded `src/recovery.rs` journal framing module, regression tests and current S8/S13/QA audit findings. All changes remain in the shared dirty worktree; no files were staged or committed.
 - This continuation integrated S5 image-event journaling, followed by selected layer structural events. Saves establish a UUID/digest-bound sidecar; committed image edits and supported layer property/order edits append bounded, synced batches; opening offers Restore/Discard; unsupported document changes create a disabled marker so partial recovery is not presented. Headless reopen tests cover image, layer-property/order replay and Discard. The 1-MiB raw patch-event budget and synchronous UI-thread sync remain limitations. Layer create/delete, set/mesh/binding, undo/redo events, desktop interaction and process-kill evidence remain open. The suite now has 186 passing tests.
 - Current dirty paths are tracked in `git status --short`; Cargo.lock and the workflow/manifest change are committed. The current implementation includes layer-row DnD, `Document::composite_region_for_set`, material-map region patching, and partial UV texture updates for touched 64×64 paint tiles.
-- Clean-clone verification of `12bc283`: `cargo check --locked --all-targets` and `cargo test --locked --all-targets` pass. The exact commit fails rustfmt and strict Clippy on source cleanup that is present only in the broader worktree; that worktree passes both gates. Remote CI remains unavailable because origin is a local bundle.
+- Clean-clone verification of `12bc283`: locked all-target check and tests pass, but that commit's source fails rustfmt and strict Clippy. Commit `28a5555` contains the cleanup; its exact clean-clone CI checks are the next verification step. Remote CI remains unavailable because origin is a local bundle.
 - Latest integration extends recovery events to layer rename, visibility, opacity, blend mode, per-channel enablement and reorder; an app save/edit/reopen test checks the exact resulting layer order and properties. The current suite is 186/186. `src/bake.rs` now also has deterministic bounded AO core tests for an open plane and an occluding blocker; the primitive is not exposed through CLI or saved to projects.
 - The current task slices and documentation updates remain uncommitted alongside the pre-existing dirty worktree. No stage/commit was made because unrelated source edits were already pending.
 
@@ -77,6 +77,6 @@
 
 1. Wire committed brush/fill/mask patches into bounded journal records, then cover structural, set and mesh mutation events before enabling startup restore/keep/discard recovery UI.
 2. Benchmark 1K/2K/4K paint strokes and validate egui partial texture updates in a desktop session; the region compositor is covered by byte-equality tests but has no latency measurement.
-3. Integrate the source cleanup that makes rustfmt and strict Clippy pass from a clean checkout, then run the full CI command set in a fresh clone. The Cargo.lock is already tracked in `12bc283`; remote CI is unavailable because the configured origin is a local bundle.
+3. Run the complete CI command set from a fresh clone at `28a5555`. The Cargo.lock is tracked since `12bc283`; remote CI is unavailable because the configured origin is a local bundle.
 
 REA/Ghidra evidence: none used. Legal/source review was unnecessary for these ordinary engineering tasks.
