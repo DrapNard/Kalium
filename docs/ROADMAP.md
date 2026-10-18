@@ -2,7 +2,7 @@
 
 This document describes the long-term development program, not current features. The current source is `v0.3.0-alpha.2`, not a complete v1.0 product. The authoritative current implementation and verification status is in `docs/roadmap/implementation-status.md`.
 
-As of 2026-10-18, the worktree passes 191 unit tests, formatting, strict Clippy, all-target compilation and optional GPU-feature compilation. The active worktree is still a prototype; desktop GUI interaction, graphics hardware, downstream-engine imports and release packaging remain unverified. See `docs/qa/test-matrix.md` for current counts and scope.
+As of 2026-10-18, the worktree passes 192 unit tests, formatting, strict Clippy, all-target compilation and optional GPU-feature compilation. The active worktree is still a prototype; desktop GUI interaction, graphics hardware, downstream-engine imports and release packaging remain unverified. See `docs/qa/test-matrix.md` for current counts and scope.
 
 ## v0.1 — first editable foundation (this delivery)
 

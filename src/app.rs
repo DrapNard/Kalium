@@ -2885,6 +2885,55 @@ mod unsaved_change_tests {
     }
 
     #[test]
+    fn restore_recovers_valid_prefix_after_torn_final_journal_frame() {
+        let temp = TempProject::new();
+        let baseline = Document::new(64);
+        let project_id = baseline.project_id;
+        project::save(&baseline, &temp.0).unwrap();
+        let baseline_digest = project::file_digest(&temp.0).unwrap();
+
+        let mut app = test_app();
+        app.install_open_project(baseline, temp.0.clone(), false);
+        let layer_id = app.doc.selected_layer().id;
+        app.append_recovery_batch(&[crate::recovery::DocumentEvent::LayerVisibility {
+            set_id: app.doc.active_set_id,
+            layer_id,
+            visible: false,
+        }]);
+        app.append_recovery_batch(&[crate::recovery::DocumentEvent::LayerOpacity {
+            set_id: app.doc.active_set_id,
+            layer_id,
+            opacity: 0.25,
+        }]);
+        drop(app);
+
+        let journal_path = recovery_journal_path(&temp.0);
+        let journal_bytes = std::fs::read(&journal_path).unwrap();
+        assert!(journal_bytes.len() > 2);
+        std::fs::write(&journal_path, &journal_bytes[..journal_bytes.len() - 2]).unwrap();
+
+        let mut reopened = test_app();
+        reopened.install_open_project(project::load(&temp.0).unwrap(), temp.0.clone(), false);
+        assert!(reopened.pending_journal_recovery.is_some());
+        reopened.resolve_journal_recovery(JournalRecoveryChoice::Restore);
+        let layer = reopened.doc.selected_layer();
+        assert!(!layer.visible, "complete prefix event should be replayed");
+        assert_eq!(layer.opacity, 1.0, "torn final frame must not be replayed");
+
+        reopened.append_recovery_batch(&[crate::recovery::DocumentEvent::LayerOpacity {
+            set_id: reopened.doc.active_set_id,
+            layer_id,
+            opacity: 0.5,
+        }]);
+        let records = crate::recovery::scan(&journal_path, project_id, baseline_digest, 1).unwrap();
+        assert_eq!(
+            records.len(),
+            2,
+            "journal should append after truncating its torn tail"
+        );
+    }
+
+    #[test]
     fn selection_after_select_then_paint_is_restored_by_stable_id() {
         let temp = TempProject::new();
         let mut baseline = Document::new(64);

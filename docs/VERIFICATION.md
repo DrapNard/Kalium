@@ -4,10 +4,10 @@ Author / source identity: **DrapNard**. This report separates the current source
 
 ## Current worktree checks (2026-10-18)
 
-The dirty Linux worktree passed:
+The current Linux worktree passed:
 
 - `cargo fmt --all -- --check` and `git diff --check`.
-- `cargo test --locked --all-targets` — 191 passed, 0 failed, including layer-row drag/reorder, selected-layer restoration, oversized-stroke fail-closed recovery, and save → journal append → reopen → image/layer replay and Discard coverage.
+- `cargo test --locked --all-targets` — 192 passed, 0 failed, including layer-row drag/reorder, selected-layer restoration, oversized-stroke fail-closed recovery, torn-tail prefix restore/append, and save → journal append → reopen → image/layer replay and Discard coverage.
 - `cargo clippy --locked --all-targets -- -D warnings`.
 - `cargo check --locked --offline --all-targets`.
 - `cargo check --locked --all-targets --features gpu-experimental` — compile only.
