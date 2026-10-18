@@ -17,7 +17,7 @@
 - The latest source integration adds AO CLI output and closes two recovery gaps: selected-layer replay is journaled, and an oversized committed patch disables recovery rather than exposing an incomplete older prefix. Regression tests cover both. The integrated suite was 191/191 at that commit. The `bake-ao` demo smoke writes a 512×512 RGBA PNG with 262,144 covered texels; AO output is not saved to projects.
 - Commit `9fc6f91` integrates the AO CLI and recovery fixes. A fresh isolated clone at that commit passed formatting, 191 tests, strict Clippy, GPU-experimental feature compilation, diff checks and clean status. Commit `1316e71` adds app-level torn-tail recovery; its 192-test run was from the main worktree. Hosted CI remains unavailable because origin is a local bundle.
 
-- Current follow-up changes add `restore_recovers_valid_prefix_after_torn_final_journal_frame` in `src/app.rs`. It truncates a simulated final frame, confirms Restore applies the complete visibility event but not the incomplete opacity event, then verifies the journal accepts a later append. Focused test and full suite pass. Commit `88c5ea1` includes the complete-frame checksum rejection test and was verified from an isolated clean clone with 193 tests, strict Clippy and the GPU-feature compile gate.
+- Current follow-up changes add `restore_recovers_valid_prefix_after_torn_final_journal_frame` in `src/app.rs`. It truncates a simulated final frame, confirms Restore applies the complete visibility event but not the incomplete opacity event, then verifies the journal accepts a later append. Focused test and full suite pass. Commit `88c5ea1` includes complete-frame checksum rejection and passed clean-clone checks with 193 tests. Commit `1316e71` added app-level torn-tail restore/append; commit `88c5ea1` added complete checksum-corrupt frame rejection and passed clean-clone gates at 193 tests. Current follow-up adds an end-to-end AO CLI PNG test; 194 tests pass locally and clean-clone verification is pending.
 
 ## Stage/task status
 
@@ -48,7 +48,7 @@
 ## Verification run
 
 - `cargo fmt --all -- --check` — PASS.
-- `cargo test --locked --all-targets` — PASS, 193 passed / 0 failed locally; commit `88c5ea1` passed clean-clone fmt, all 193 tests, strict Clippy, GPU-experimental compilation and diff checks.
+- `cargo test --locked --all-targets` — PASS, 194 passed / 0 failed locally; commit `88c5ea1` passed clean-clone fmt, all 193 tests, strict Clippy, GPU-experimental compilation and diff checks.
 - `cargo clippy --locked --all-targets -- -D warnings` — PASS after stroke recovery patch extraction and replay validation.
 - `cargo fmt --all -- --check` and `git diff --check` — PASS after manifest-identity integration.
 - Earlier in this worktree, `cargo check --locked --offline --all-targets` and `cargo check --locked --all-targets --features gpu-experimental` passed (compile only).

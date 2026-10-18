@@ -49,7 +49,7 @@ Document → export.rs (per-set PBR PNGs)
 On this Linux x86_64 worktree with rustc 1.97.1 / cargo 1.97.1:
 
 - `cargo fmt --all -- --check`: passed.
-- `cargo test --locked --all-targets`: 193 passed, 0 failed.
+- `cargo test --locked --all-targets`: 194 passed, 0 failed.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
 - `cargo check --locked --all-targets` and `cargo check --locked --features gpu-experimental`: passed.
 - GUI launch, interactive visual behavior, optional GPU feature, cross-platform builds and downstream-engine imports have not been verified in this session.

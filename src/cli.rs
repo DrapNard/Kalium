@@ -428,4 +428,44 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn bake_ao_cli_writes_grayscale_png_with_transparent_uv_gaps() {
+        let project_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/Kalium-Demo.kalium");
+        let output_path =
+            std::env::temp_dir().join(format!("kalium-cli-ao-{}.png", uuid::Uuid::new_v4()));
+        let baseline_digest = project::file_digest(&project_path).unwrap();
+        let args = vec![
+            "bake-ao".to_owned(),
+            project_path.display().to_string(),
+            output_path.display().to_string(),
+            "1".to_owned(),
+            "1".to_owned(),
+            "1.0".to_owned(),
+            "42".to_owned(),
+        ];
+
+        run(&args).unwrap();
+
+        let image = image::open(&output_path).unwrap().to_rgba8();
+        assert_eq!(image.dimensions(), (512, 512));
+        let mut covered = 0usize;
+        for pixel in image.pixels() {
+            if pixel[3] == 0 {
+                assert_eq!(pixel.0, [0, 0, 0, 0]);
+            } else {
+                covered += 1;
+                assert_eq!(pixel[0], pixel[1]);
+                assert_eq!(pixel[1], pixel[2]);
+                assert_eq!(pixel[3], 255);
+            }
+        }
+        assert_eq!(covered, 262_144);
+        assert_eq!(
+            project::file_digest(&project_path).unwrap(),
+            baseline_digest
+        );
+        std::fs::remove_file(output_path).unwrap();
+    }
 }
