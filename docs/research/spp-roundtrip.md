@@ -82,3 +82,23 @@ resource datasets were inventoried by name/size, not extracted.
 - [Painter remote control](https://experienceleague.adobe.com/en/docs/substance-3d-dev/painter-python/tutorials/remote-control): local scripting endpoint and request encoding.
 - [Painter command lines](https://experienceleague.adobe.com/en/docs/substance-3d-painter/using/pipeline-and-integration/configuration/command-lines): launch options.
 - [Assimp binary definitions](https://github.com/assimp/assimp/blob/master/code/Common/assbin_chunks.h) and [loader](https://github.com/assimp/assimp/blob/master/code/AssetLib/Assbin/AssbinLoader.cpp): comparison against the public 1.0 contract, not a schema for the observed 1.7 payload.
+
+## Controlled layer variants
+
+The harness `--layer-variants` option was actually run on Painter 11.1.3.
+Evidence: `ev_9103b526e1ee5f9a8ea8d63430f4086bab29c70c1cff9b7c187364633aea473c`.
+Starting with one visible layer at opacity 1, it saves a rename to `Kalium01`,
+then Base Color opacity 0.375, then visibility false as separate full copies.
+A new full save is subsequently changed to visible and saved incrementally.
+All four files reopen editable with exactly the recorded name, opacity and
+visibility, and unchanged archive digests. The private corpus is in
+`/tmp/kalium-spp-variants`; its manifest contains hashes and expected states.
+This validates the oracle corpus, not Kalium editing or a decoded format.
+
+Independent checksum investigation: standard MurmurHash3 x64_128 seed zero on
+the first fixture's entire raw `document.bin` yields
+`d2cd27a722e3420f c768b76a4b9c66f9`, unlike the observed attribute
+`cbdf8b6a556e4bba 7ee9df3eb0736710`. Swapping output words and common byte-order
+representations does not match. Other seeds/input coverage remain unknown.
+The public-domain [SMHasher reference](https://github.com/aappleby/smhasher/blob/master/src/MurmurHash3.cpp)
+was the comparison contract; no Adobe hash implementation was inspected.

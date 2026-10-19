@@ -38,6 +38,8 @@ MAX_FIXTURE = 128 * 1024 * 1024
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--painter", required=True, type=Path)
+    parser.add_argument("--layer-variants", action="store_true",
+                        help="Create and reopen controlled name/opacity/visibility saves")
     args = parser.parse_args()
     if not args.painter.is_file():
         raise RuntimeError("Painter executable does not exist")
@@ -151,6 +153,52 @@ def main():
             "mesh_sha256": hashlib.sha256(MESH.encode()).hexdigest(),
             "files": [baseline_before_reopen, copy_info],
         }
+        if args.layer_variants:
+            remote("import substance_painter.layerstack; import substance_painter.textureset")
+            node = ("substance_painter.layerstack.get_root_layer_nodes("
+                    "substance_painter.textureset.get_active_stack())[0]")
+            channel = "substance_painter.textureset.ChannelType.BaseColor"
+
+            def layer_state():
+                return remote(f"[{node}.get_name(), {node}.get_opacity({channel}), "
+                              f"{node}.is_visible()]")
+
+            initial = layer_state()
+            variants = []
+            steps = [
+                ("renamed-full.spp", f"{node}.set_name('Kalium01')"),
+                ("opacity-full.spp", f"{node}.set_opacity(0.375, {channel})"),
+                ("hidden-full.spp", f"{node}.set_visible(False)"),
+            ]
+            for filename, mutation in steps:
+                remote(mutation)
+                wait_ready(editable)
+                path = root / filename
+                remote(f"substance_painter.project.save_as_copy({str(path)!r}, "
+                       "substance_painter.project.ProjectSaveMode.Full)")
+                variants.append({"file": inspect_file(path), "state": layer_state(),
+                                 "mode": "Full"})
+            incremental = root / "visible-incremental.spp"
+            remote(f"substance_painter.project.save_as({str(incremental)!r}, "
+                   "substance_painter.project.ProjectSaveMode.Full)")
+            remote(f"{node}.set_visible(True)")
+            wait_ready(editable)
+            remote("substance_painter.project.save("
+                   "substance_painter.project.ProjectSaveMode.Incremental)")
+            variants.append({"file": inspect_file(incremental), "state": layer_state(),
+                             "mode": "Full followed by Incremental"})
+            for variant in variants:
+                remote("substance_painter.project.close()")
+                path = root / variant["file"]["name"]
+                remote(f"substance_painter.project.open({str(path)!r})")
+                wait_ready(editable)
+                if layer_state() != variant["state"]:
+                    raise RuntimeError(f"Layer state changed on reopen: {path.name}")
+                if inspect_file(path)["sha256"] != variant["file"]["sha256"]:
+                    raise RuntimeError(f"Reopen modified archive: {path.name}")
+                variant["reopen_state_verified"] = True
+            manifest["initial_layer_state"] = initial
+            manifest["layer_variants"] = variants
         (root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         remote("substance_painter.project.close()")
         print(json.dumps({"root": str(root), **manifest}), flush=True)
