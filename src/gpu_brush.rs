@@ -28,6 +28,9 @@ pub fn stamp(image: &mut RgbaImage, brush: &Brush, uv: [f32; 2]) -> Result<()> {
     if !matches!(brush.mode, BrushMode::Paint | BrushMode::Erase) {
         bail!("Experimental GPU brush currently supports only Paint and Erase");
     }
+    if !brush.tip.is_round() {
+        bail!("Experimental GPU brush currently supports only round brush tips");
+    }
     if uv
         .iter()
         .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
@@ -164,4 +167,20 @@ pub fn stamp(image: &mut RgbaImage, brush: &Brush, uv: [f32; 2]) -> Result<()> {
     drop(mapped);
     readback.unmap();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn experimental_gpu_path_rejects_alpha_tips_explicitly() {
+        let mut image = RgbaImage::new(8, 8);
+        let brush = Brush {
+            tip: crate::paint::BrushTip::alpha(1, 1, vec![255]).unwrap(),
+            ..Brush::default()
+        };
+        let error = stamp(&mut image, &brush, [0.5, 0.5]).unwrap_err();
+        assert!(error.to_string().contains("round brush tips"));
+    }
 }

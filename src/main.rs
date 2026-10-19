@@ -1,8 +1,8 @@
 // Keep a console attached even for release builds: Kalium includes a headless CLI.
 // A GUI-only Windows launcher can be added as a separate binary later.
 
+mod activity_log;
 mod app;
-#[allow(dead_code)] // High-to-low projection awaits a persisted mesh-alignment contract.
 mod bake;
 mod brush_preset;
 mod cli;
@@ -10,14 +10,23 @@ mod document;
 mod export;
 #[cfg(feature = "gpu-experimental")]
 mod gpu_brush;
+mod gpu_viewport;
 mod history;
+mod journal_writer;
+#[allow(dead_code)] // S4 tree primitives await integration with Document and the compositor.
+mod layer_tree;
 mod layout;
 mod mesh;
 mod ops;
 mod paint;
+mod painter_classic;
+#[allow(dead_code)] // S9 core is awaiting layer, persistence, history and UI integration.
+mod procedural;
 mod project;
+mod recent_projects;
 #[allow(dead_code)]
 mod recovery;
+mod recovery_store;
 mod renderer;
 mod spp;
 mod uv;
@@ -31,8 +40,9 @@ fn main() -> Result<()> {
     }
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("Kalium • Artist-first 3D Painter")
-            .with_inner_size([1430.0, 860.0])
+            .with_title("Kalium")
+            .with_inner_size([1920.0, 1080.0])
+            .with_maximized(true)
             .with_min_inner_size([900.0, 600.0]),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()

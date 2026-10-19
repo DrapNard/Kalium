@@ -10,6 +10,17 @@
 
 ---
 
+## Owner priority update — 2026-10-19
+
+The owner requests a public GitHub repository and refocuses work on real editable
+`.spp` open/save. SPP is the sole target project format for the requested final
+workflow. Existing `.kalium` persistence is current alpha behavior, not acceptance
+of this requirement. Prioritize a clean-room SPP adapter and Painter-verified
+round-trips over additional visual polish. Preserve existing artist work while
+that adapter is developed; never rename native ZIP data as SPP, or count a
+signature detector, texture export or unchanged-byte copy as editable support.
+See `spp-focus.md` for the current investigation/acceptance contract.
+
 ## 0. YOUR MISSION AND EXECUTION CONTRACT
 
 You are the principal engineer responsible for **completing Kalium as a usable, performant, maintainable, free/open-source 3D PBR texture painting application**, inspired by the *workflows and level of capability* of Substance 3D Painter, not by its proprietary source code, shaders, designs or assets.

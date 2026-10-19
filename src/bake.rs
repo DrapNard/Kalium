@@ -1,19 +1,397 @@
 //! Bounded, deterministic CPU mesh-map baking primitives.
 //!
-//! This first slice rasterizes the active mesh's own attributes into a
-//! Texture Set's UV atlas. It does not perform high-to-low ray projection and
-//! its outputs are not yet part of the persisted document schema.
+//! The module rasterizes mesh attributes and ambient occlusion into a Texture
+//! Set's UV atlas. AO can run on a cancellable worker and be installed as an
+//! editable Occlusion layer; bounded per-Texture-Set bake settings persist as
+//! project metadata, while high-to-low outputs are not stored as mesh maps.
 use crate::mesh::Mesh;
 use anyhow::{bail, Context, Result};
 use glam::{DVec2, DVec3, Vec3};
 use image::{Rgba, RgbaImage};
-use std::sync::atomic::{AtomicBool, Ordering};
+use serde::{Deserialize, Serialize};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        mpsc::{self, Receiver, TryRecvError},
+        Arc,
+    },
+    thread::{self, JoinHandle},
+};
+
+static MATERIAL_ID_OUTPUT_NONCE: AtomicU64 = AtomicU64::new(0);
+
+/// Build the stable sidecar metadata shared by CLI and editor material-ID exports.
+pub fn material_id_metadata(
+    mesh: &Mesh,
+    size: u32,
+    set_id: u32,
+    set_name: &str,
+    active_in_source_project: bool,
+) -> Result<serde_json::Value> {
+    if set_id == 0 || !(64..=MAX_BAKE_SIZE).contains(&size) {
+        bail!("Invalid material-ID metadata Texture Set or dimensions");
+    }
+    let mut material_slots = Vec::new();
+    material_slots
+        .try_reserve_exact(mesh.material_count())
+        .map_err(|_| anyhow::anyhow!("Could not reserve material-ID slot metadata"))?;
+    for slot in 0..mesh.material_count() {
+        material_slots.push(serde_json::json!({
+            "slot_index": slot,
+            "name": mesh.material_name(slot),
+        }));
+    }
+    Ok(serde_json::json!({
+        "format": "Kalium Material ID",
+        "version": 1,
+        "encoding": {
+            "channel": "RGB",
+            "slot_index_bits": 24,
+            "byte_order": "little-endian",
+            "rgb": ["slot_index & 0xff", "(slot_index >> 8) & 0xff", "(slot_index >> 16) & 0xff"],
+            "alpha": {"covered": 255, "uncovered": 0},
+            "uncovered_rgb": [0, 0, 0],
+        },
+        "dimensions": {"width": size, "height": size},
+        "texture_set": {
+            "id": set_id,
+            "name": set_name,
+            "active_in_source_project": active_in_source_project,
+        },
+        "uv_overlap_policy": "first covering triangle in mesh index order",
+        "material_slots": material_slots,
+    }))
+}
+
+/// Write a material-ID PNG and its metadata sidecar as one recoverable pair.
+/// Both files are staged and synced first; if publishing either one fails, any
+/// previous pair is restored and the newly published half is removed.
+pub fn write_material_id_outputs(
+    image: &RgbaImage,
+    metadata: &serde_json::Value,
+    output_path: &Path,
+) -> Result<PathBuf> {
+    use image::ImageEncoder;
+
+    if output_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("png")
+    {
+        bail!("Material-ID output path must end in .png");
+    }
+    let mut sidecar_name = output_path.as_os_str().to_os_string();
+    sidecar_name.push(".json");
+    let sidecar_path = PathBuf::from(sidecar_name);
+    let (temp_png, temp_json) = unique_material_id_temp_paths(output_path);
+
+    let write_result = (|| -> Result<()> {
+        let png_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_png)
+            .context("Could not create staged material-ID PNG")?;
+        image::codecs::png::PngEncoder::new(png_file).write_image(
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            image::ExtendedColorType::Rgba8,
+        )?;
+        File::open(&temp_png)?.sync_all()?;
+
+        let json = serde_json::to_vec_pretty(metadata)?;
+        let mut json_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_json)
+            .context("Could not create staged material-ID metadata")?;
+        json_file.write_all(&json)?;
+        json_file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_png);
+        let _ = fs::remove_file(&temp_json);
+        return Err(error);
+    }
+
+    let backup_png = unique_material_id_temp_paths(output_path).0;
+    let backup_json = unique_material_id_temp_paths(&sidecar_path).0;
+    let mut png_backed_up = false;
+    let mut json_backed_up = false;
+    let backup_result = (|| -> Result<()> {
+        for (path, backup, backed_up) in [
+            (output_path, backup_png.as_path(), &mut png_backed_up),
+            (
+                sidecar_path.as_path(),
+                backup_json.as_path(),
+                &mut json_backed_up,
+            ),
+        ] {
+            if path.exists() {
+                if !path.is_file() {
+                    bail!(
+                        "Material-ID output path is not a regular file: {}",
+                        path.display()
+                    );
+                }
+                fs::rename(path, backup).with_context(|| {
+                    format!("Could not preserve existing output {}", path.display())
+                })?;
+                *backed_up = true;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = backup_result {
+        if png_backed_up {
+            let _ = fs::rename(&backup_png, output_path);
+        }
+        let _ = fs::remove_file(&temp_png);
+        let _ = fs::remove_file(&temp_json);
+        return Err(error);
+    }
+
+    let publish_result = fs::rename(&temp_png, output_path)
+        .with_context(|| {
+            format!(
+                "Could not publish material-ID PNG {}",
+                output_path.display()
+            )
+        })
+        .and_then(|()| {
+            fs::rename(&temp_json, &sidecar_path).with_context(|| {
+                format!(
+                    "Could not publish material-ID sidecar {}",
+                    sidecar_path.display()
+                )
+            })
+        });
+    if let Err(error) = publish_result {
+        let _ = fs::remove_file(output_path);
+        let _ = fs::remove_file(&sidecar_path);
+        if png_backed_up {
+            let _ = fs::rename(&backup_png, output_path);
+        }
+        if json_backed_up {
+            let _ = fs::rename(&backup_json, &sidecar_path);
+        }
+        let _ = fs::remove_file(&temp_png);
+        let _ = fs::remove_file(&temp_json);
+        return Err(error);
+    }
+
+    if png_backed_up {
+        let _ = fs::remove_file(backup_png);
+    }
+    if json_backed_up {
+        let _ = fs::remove_file(backup_json);
+    }
+    Ok(sidecar_path)
+}
+
+/// Stage and publish a high-to-low world-normal, coverage, and metadata bundle.
+/// Existing outputs are restored if any publish step fails.
+pub fn write_high_to_low_outputs(
+    maps: &BakedMeshMaps,
+    metadata: &serde_json::Value,
+    output_dir: &Path,
+) -> Result<[PathBuf; 3]> {
+    use image::ImageEncoder;
+
+    fs::create_dir_all(output_dir)?;
+    let outputs = [
+        output_dir.join("Kalium_HighToLow_WorldNormal.png"),
+        output_dir.join("Kalium_HighToLow_Coverage.png"),
+        output_dir.join("Kalium_HighToLow_Metadata.json"),
+    ];
+    let nonce = MATERIAL_ID_OUTPUT_NONCE.fetch_add(1, Ordering::Relaxed);
+    let temporary: [PathBuf; 3] = std::array::from_fn(|i| {
+        output_dir.join(format!(
+            ".kalium-high-to-low-{}-{nonce}-{i}.tmp",
+            std::process::id()
+        ))
+    });
+    let backups: [PathBuf; 3] = std::array::from_fn(|i| {
+        output_dir.join(format!(
+            ".kalium-high-to-low-{}-{nonce}-{i}.bak",
+            std::process::id()
+        ))
+    });
+    let stage_result = (|| -> Result<()> {
+        let normal_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary[0])?;
+        image::codecs::png::PngEncoder::new(normal_file).write_image(
+            maps.world_normal_image().as_raw(),
+            maps.size,
+            maps.size,
+            image::ExtendedColorType::Rgba8,
+        )?;
+        File::open(&temporary[0])?.sync_all()?;
+
+        let coverage: Vec<u8> = maps
+            .valid
+            .iter()
+            .map(|&valid| if valid == 0 { 0 } else { 255 })
+            .collect();
+        let coverage_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary[1])?;
+        image::codecs::png::PngEncoder::new(coverage_file).write_image(
+            &coverage,
+            maps.size,
+            maps.size,
+            image::ExtendedColorType::L8,
+        )?;
+        File::open(&temporary[1])?.sync_all()?;
+
+        let mut metadata_file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary[2])?;
+        metadata_file.write_all(&serde_json::to_vec_pretty(metadata)?)?;
+        metadata_file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = stage_result {
+        for path in &temporary {
+            let _ = fs::remove_file(path);
+        }
+        return Err(error);
+    }
+
+    let mut backed_up = [false; 3];
+    for i in 0..outputs.len() {
+        if outputs[i].exists() {
+            if !outputs[i].is_file() {
+                for path in &temporary {
+                    let _ = fs::remove_file(path);
+                }
+                for j in 0..i {
+                    if backed_up[j] {
+                        let _ = fs::rename(&backups[j], &outputs[j]);
+                    }
+                }
+                bail!(
+                    "High-to-low output path is not a regular file: {}",
+                    outputs[i].display()
+                );
+            }
+            if let Err(error) = fs::rename(&outputs[i], &backups[i]) {
+                for j in 0..i {
+                    if backed_up[j] {
+                        let _ = fs::rename(&backups[j], &outputs[j]);
+                    }
+                }
+                for path in &temporary {
+                    let _ = fs::remove_file(path);
+                }
+                return Err(error).with_context(|| {
+                    format!(
+                        "Could not preserve existing output {}",
+                        outputs[i].display()
+                    )
+                });
+            }
+            backed_up[i] = true;
+        }
+    }
+
+    for i in 0..outputs.len() {
+        if let Err(error) = fs::rename(&temporary[i], &outputs[i]) {
+            for j in 0..outputs.len() {
+                if outputs[j].exists() && !backed_up[j] {
+                    let _ = fs::remove_file(&outputs[j]);
+                }
+                if backed_up[j] {
+                    let _ = fs::remove_file(&outputs[j]);
+                    let _ = fs::rename(&backups[j], &outputs[j]);
+                }
+                let _ = fs::remove_file(&temporary[j]);
+            }
+            return Err(error).with_context(|| {
+                format!(
+                    "Could not publish high-to-low output {}",
+                    outputs[i].display()
+                )
+            });
+        }
+    }
+    for i in 0..outputs.len() {
+        if backed_up[i] {
+            let _ = fs::remove_file(&backups[i]);
+        }
+    }
+    Ok(outputs)
+}
+
+fn unique_material_id_temp_paths(path: &Path) -> (PathBuf, PathBuf) {
+    let nonce = MATERIAL_ID_OUTPUT_NONCE.fetch_add(1, Ordering::Relaxed);
+    let mut first = path.as_os_str().to_os_string();
+    first.push(format!(".kalium-{}-{nonce}.tmp", std::process::id()));
+    let mut second = first.clone();
+    second.push(".sidecar");
+    (PathBuf::from(first), PathBuf::from(second))
+}
 
 const MAX_BAKE_SIZE: u32 = 4096;
 const MAX_RASTER_SAMPLES: u64 = 90_000_000;
-const MAX_AO_SAMPLES_PER_TEXEL: u32 = 4096;
-const MAX_AO_RAYS: u64 = 100_000_000;
+pub const MAX_AO_SAMPLES_PER_TEXEL: u32 = 4096;
+pub const MAX_AO_RAYS: u64 = 100_000_000;
+pub const AO_SETTINGS_EXTENSION_KEY: &str = "kalium_bake_ao";
 const BVH_NODE_LEAF_TRIANGLES: usize = 8;
+
+/// Per-Texture-Set options for a deterministic ambient-occlusion bake.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AmbientOcclusionBakeSettings {
+    pub sample_count: u32,
+    pub max_ray_distance: f32,
+    pub seed: u64,
+}
+
+impl Default for AmbientOcclusionBakeSettings {
+    fn default() -> Self {
+        Self {
+            sample_count: 16,
+            max_ray_distance: 1.0,
+            seed: 0,
+        }
+    }
+}
+
+impl AmbientOcclusionBakeSettings {
+    pub fn sample_limit(size: u32) -> u32 {
+        let texels = u64::from(size).saturating_mul(u64::from(size)).max(1);
+        (MAX_AO_RAYS / texels)
+            .min(u64::from(MAX_AO_SAMPLES_PER_TEXEL))
+            .max(1) as u32
+    }
+
+    pub fn clamped_for_size(mut self, size: u32) -> Self {
+        self.sample_count = self.sample_count.clamp(1, Self::sample_limit(size));
+        if !self.max_ray_distance.is_finite() {
+            self.max_ray_distance = Self::default().max_ray_distance;
+        }
+        self.max_ray_distance = self.max_ray_distance.clamp(0.01, 100.0);
+        self
+    }
+
+    pub fn validate_for_size(self, size: u32) -> Result<()> {
+        if !(1..=Self::sample_limit(size)).contains(&self.sample_count) {
+            bail!("Ambient-occlusion sample count exceeds the texture-size ray budget");
+        }
+        if !self.max_ray_distance.is_finite() || !(0.01..=100.0).contains(&self.max_ray_distance) {
+            bail!("Ambient-occlusion ray distance is outside the supported range");
+        }
+        Ok(())
+    }
+}
 const RAY_ORIGIN_BIAS: f64 = 1.0e-7;
 
 /// CPU-baked per-texel attributes. `valid` is zero outside covered UVs.
@@ -55,6 +433,199 @@ pub struct AmbientOcclusionBakeOptions<'a> {
     pub working_budget_bytes: u64,
 }
 
+/// Owned settings for a background ambient-occlusion bake.
+///
+/// The worker owns these settings and its mesh snapshot, so it never needs a
+/// document lock or references into UI state.
+#[derive(Clone)]
+pub struct AmbientOcclusionBakeJobOptions {
+    pub size: u32,
+    pub bindings: Vec<Option<u32>>,
+    pub active_set_id: u32,
+    pub sample_count: u32,
+    pub max_ray_distance: f32,
+    pub seed: u64,
+    pub working_budget_bytes: u64,
+}
+
+/// Owned options for a cancellable material-ID bake.
+#[derive(Clone)]
+pub struct MaterialIdBakeJobOptions {
+    pub size: u32,
+    pub bindings: Vec<Option<u32>>,
+    pub active_set_id: u32,
+    pub working_budget_bytes: u64,
+}
+
+/// Cancellable background material-ID bake. Poll [`Self::try_take_result`]
+/// from the UI thread; dropping the handle requests cancellation.
+pub struct MaterialIdBakeWorker {
+    cancel: Arc<AtomicBool>,
+    result_rx: Receiver<Result<RgbaImage>>,
+    _worker: JoinHandle<()>,
+    result_taken: bool,
+}
+
+impl MaterialIdBakeWorker {
+    pub fn spawn(mesh: Mesh, options: MaterialIdBakeJobOptions) -> Result<Self> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let worker_cancel = Arc::clone(&cancel);
+        let worker = thread::Builder::new()
+            .name("kalium-material-id-bake".into())
+            .spawn(move || {
+                let result = bake_material_id(
+                    &mesh,
+                    options.size,
+                    &options.bindings,
+                    options.active_set_id,
+                    options.working_budget_bytes,
+                    &worker_cancel,
+                );
+                let _ = result_tx.send(result);
+            })
+            .context("Could not start material-ID bake worker")?;
+
+        Ok(Self {
+            cancel,
+            result_rx,
+            _worker: worker,
+            result_taken: false,
+        })
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn try_take_result(&mut self) -> Option<Result<RgbaImage>> {
+        if self.result_taken {
+            return None;
+        }
+        match self.result_rx.try_recv() {
+            Ok(result) => {
+                self.result_taken = true;
+                Some(result)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.result_taken = true;
+                Some(Err(anyhow::anyhow!(
+                    "Material-ID bake worker stopped without a result"
+                )))
+            }
+        }
+    }
+}
+
+impl Drop for MaterialIdBakeWorker {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Monotonic progress for the ambient-occlusion worker's sampling pass.
+/// Earlier UV-raster and acceleration phases report zero completed rows; the
+/// total remains the requested bake size throughout the job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AmbientOcclusionBakeProgress {
+    pub completed_rows: u32,
+    pub total_rows: u32,
+}
+
+/// Cancellable background AO bake. Poll [`Self::progress`] and
+/// [`Self::try_take_result`] from the UI thread; neither call waits for the
+/// worker. Dropping the handle requests cancellation.
+pub struct AmbientOcclusionBakeWorker {
+    cancel: Arc<AtomicBool>,
+    completed_rows: Arc<AtomicU32>,
+    total_rows: u32,
+    result_rx: Receiver<Result<BakedAmbientOcclusion>>,
+    // Keeping the handle documents ownership; dropping it detaches the worker,
+    // which observes `cancel` at the normal AO cancellation checkpoints.
+    _worker: JoinHandle<()>,
+    result_taken: bool,
+}
+
+impl AmbientOcclusionBakeWorker {
+    /// Start a background bake with an owned mesh snapshot and owned options.
+    pub fn spawn(mesh: Mesh, options: AmbientOcclusionBakeJobOptions) -> Result<Self> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let completed_rows = Arc::new(AtomicU32::new(0));
+        let total_rows = options.size;
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_rows = Arc::clone(&completed_rows);
+        let worker = thread::Builder::new()
+            .name("kalium-ao-bake".into())
+            .spawn(move || {
+                let result = bake_ambient_occlusion_with_progress(
+                    &mesh,
+                    AmbientOcclusionBakeOptions {
+                        size: options.size,
+                        bindings: &options.bindings,
+                        active_set_id: options.active_set_id,
+                        sample_count: options.sample_count,
+                        max_ray_distance: options.max_ray_distance,
+                        seed: options.seed,
+                        working_budget_bytes: options.working_budget_bytes,
+                    },
+                    &worker_cancel,
+                    |rows| worker_rows.store(rows, Ordering::Relaxed),
+                );
+                let _ = result_tx.send(result);
+            })
+            .context("Could not start ambient-occlusion bake worker")?;
+
+        Ok(Self {
+            cancel,
+            completed_rows,
+            total_rows,
+            result_rx,
+            _worker: worker,
+            result_taken: false,
+        })
+    }
+
+    pub fn progress(&self) -> AmbientOcclusionBakeProgress {
+        AmbientOcclusionBakeProgress {
+            completed_rows: self.completed_rows.load(Ordering::Relaxed),
+            total_rows: self.total_rows,
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Return the completed result if available. The result is delivered once;
+    /// a disconnected worker is surfaced as an error instead of waiting.
+    pub fn try_take_result(&mut self) -> Option<Result<BakedAmbientOcclusion>> {
+        if self.result_taken {
+            return None;
+        }
+        match self.result_rx.try_recv() {
+            Ok(result) => {
+                self.result_taken = true;
+                Some(result)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.result_taken = true;
+                Some(Err(anyhow::anyhow!(
+                    "Ambient-occlusion bake worker stopped without a result"
+                )))
+            }
+        }
+    }
+}
+
+impl Drop for AmbientOcclusionBakeWorker {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Per-texel ambient occlusion. Valid texels contain the fraction of sampled
 /// hemisphere rays that hit the source mesh; 0 is open and 1 is fully occluded.
 /// Invalid texels are outside the active Texture Set's UV coverage.
@@ -66,8 +637,46 @@ pub struct BakedAmbientOcclusion {
 }
 
 impl BakedAmbientOcclusion {
+    #[cfg(test)]
     pub fn is_valid(&self, x: u32, y: u32) -> bool {
         x < self.size && y < self.size && self.valid[(y * self.size + x) as usize] != 0
+    }
+
+    /// Encode this bake as an RGBA Occlusion-channel image: white is open,
+    /// black is fully occluded, and uncovered UV texels are transparent white.
+    /// Finite values outside `[0, 1]` are clamped. A non-finite value in a
+    /// covered texel is treated as zero occlusion (open white) so malformed
+    /// public data cannot create NaN-dependent or spuriously dark output; the
+    /// bake algorithms themselves produce finite values in `[0, 1]`.
+    pub fn occlusion_image(&self) -> Result<RgbaImage> {
+        if !(64..=MAX_BAKE_SIZE).contains(&self.size) {
+            bail!("Ambient occlusion image dimension must be between 64 and {MAX_BAKE_SIZE}");
+        }
+        let texel_count = u64::from(self.size)
+            .checked_mul(u64::from(self.size))
+            .context("Ambient occlusion image dimensions overflow")?
+            as usize;
+        if self.occlusion.len() != texel_count || self.valid.len() != texel_count {
+            bail!("Ambient occlusion data does not match its image dimensions");
+        }
+
+        let mut image = RgbaImage::new(self.size, self.size);
+        for (index, pixel) in image.pixels_mut().enumerate() {
+            if self.valid[index] == 0 {
+                *pixel = Rgba([255, 255, 255, 0]);
+                continue;
+            }
+            let occlusion = self.occlusion[index];
+            let occlusion = if occlusion.is_finite() {
+                occlusion.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let open = (1.0 - occlusion) * 255.0;
+            let value = open.round() as u8;
+            *pixel = Rgba([value, value, value, 255]);
+        }
+        Ok(image)
     }
 }
 
@@ -163,6 +772,140 @@ pub fn bake_mesh_maps_budgeted(
         working_budget_bytes,
         || cancel.load(Ordering::Relaxed),
     )
+}
+
+/// Bake the destination mesh's material slot IDs into its UV atlas.
+///
+/// Covered texels contain the exact 24-bit `Mesh::triangle_material` slot
+/// index in little-endian RGB order (`slot & 0xff`, `slot >> 8`,
+/// `slot >> 16`) and alpha 255. Uncovered texels are transparent black.
+/// Texture Set bindings filter destination triangles; unbound slots belong to
+/// `active_set_id`. Raster order is mesh order, so the first triangle owns UV
+/// overlaps. The output and raster work are bounded by the same limits as the
+/// other CPU bake operations.
+pub fn bake_material_id(
+    mesh: &Mesh,
+    size: u32,
+    bindings: &[Option<u32>],
+    active_set_id: u32,
+    working_budget_bytes: u64,
+    cancel: &AtomicBool,
+) -> Result<RgbaImage> {
+    if cancel.load(Ordering::Relaxed) {
+        bail!("Material-ID bake canceled");
+    }
+    mesh.validate()?;
+    if !(64..=MAX_BAKE_SIZE).contains(&size) {
+        bail!("Material-ID bake dimension must be between 64 and {MAX_BAKE_SIZE}");
+    }
+    if active_set_id == 0 {
+        bail!("Active Texture Set ID must be nonzero");
+    }
+    if bindings.len() != mesh.material_count() {
+        bail!("Material binding count does not match mesh slots");
+    }
+    if bindings.iter().flatten().any(|id| *id == 0) {
+        bail!("Texture Set binding IDs must be nonzero");
+    }
+    if cancel.load(Ordering::Relaxed) {
+        bail!("Material-ID bake canceled");
+    }
+
+    let texel_count = u64::from(size)
+        .checked_mul(u64::from(size))
+        .context("Material-ID bake dimensions overflow")?;
+    let output_bytes = texel_count
+        .checked_mul(4)
+        .context("Material-ID bake working size overflow")?;
+    if output_bytes > working_budget_bytes {
+        bail!("Material-ID bake exceeds the caller's transient-memory budget");
+    }
+    let output_len = usize::try_from(output_bytes).context("Material-ID image size overflow")?;
+    let mut pixels = Vec::new();
+    pixels
+        .try_reserve_exact(output_len)
+        .context("Could not reserve material-ID bake output memory")?;
+    pixels.resize(output_len, 0);
+    let scale = f64::from(size - 1);
+    let mut raster_samples = 0u64;
+
+    for (triangle_index, triangle) in mesh.indices.chunks_exact(3).enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            bail!("Material-ID bake canceled");
+        }
+        let slot = mesh.triangle_material(triangle_index);
+        let assigned_set = bindings
+            .get(slot)
+            .copied()
+            .flatten()
+            .unwrap_or(active_set_id);
+        if assigned_set != active_set_id {
+            continue;
+        }
+
+        let vertices = [
+            &mesh.vertices[triangle[0] as usize],
+            &mesh.vertices[triangle[1] as usize],
+            &mesh.vertices[triangle[2] as usize],
+        ];
+        let uv = vertices
+            .map(|vertex| DVec2::new(f64::from(vertex.uv[0]), f64::from(vertex.uv[1])) * scale);
+        if uv.iter().any(|coordinate| !coordinate.is_finite()) {
+            bail!("Mesh UV coordinate exceeds the supported bake range");
+        }
+        let area = edge(uv[0], uv[1], uv[2]);
+        if !area.is_finite() || area.abs() < 1.0e-7 {
+            continue;
+        }
+        let min_uv = uv[0].min(uv[1]).min(uv[2]);
+        let max_uv = uv[0].max(uv[1]).max(uv[2]);
+        if max_uv.x < 0.0 || max_uv.y < 0.0 || min_uv.x > scale || min_uv.y > scale {
+            continue;
+        }
+        let min_x = min_uv.x.floor().max(0.0).min(scale) as u32;
+        let min_y = min_uv.y.floor().max(0.0).min(scale) as u32;
+        let max_x = max_uv.x.ceil().max(0.0).min(scale) as u32;
+        let max_y = max_uv.y.ceil().max(0.0).min(scale) as u32;
+        if min_x > max_x || min_y > max_y {
+            continue;
+        }
+        let sample_count = u64::from(max_x - min_x + 1)
+            .checked_mul(u64::from(max_y - min_y + 1))
+            .context("Material-ID raster work estimate overflow")?;
+        raster_samples = raster_samples.saturating_add(sample_count);
+        if raster_samples > MAX_RASTER_SAMPLES {
+            bail!("Material-ID bake exceeds the CPU rasterization safety budget");
+        }
+        let id = [slot as u8, (slot >> 8) as u8, (slot >> 16) as u8, 255];
+        for y in min_y..=max_y {
+            if cancel.load(Ordering::Relaxed) {
+                bail!("Material-ID bake canceled");
+            }
+            for x in min_x..=max_x {
+                let pixel = DVec2::new(f64::from(x), f64::from(y));
+                let b0 = edge(uv[1], uv[2], pixel) / area;
+                let b1 = edge(uv[2], uv[0], pixel) / area;
+                let b2 = 1.0 - b0 - b1;
+                if !b0.is_finite()
+                    || !b1.is_finite()
+                    || !b2.is_finite()
+                    || b0 < -1.0e-5
+                    || b1 < -1.0e-5
+                    || b2 < -1.0e-5
+                {
+                    continue;
+                }
+                let offset = ((y as usize * size as usize) + x as usize) * 4;
+                // Alpha doubles as the ownership mask, preserving the first
+                // triangle's ID when UV islands overlap.
+                if pixels[offset + 3] == 0 {
+                    pixels[offset..offset + 4].copy_from_slice(&id);
+                }
+            }
+        }
+    }
+
+    RgbaImage::from_raw(size, size, pixels).context("Could not construct material-ID bake image")
 }
 
 /// Bake high-mesh world normals onto the low mesh's UV atlas. Rays are cast
@@ -280,12 +1023,22 @@ pub fn bake_high_to_low_world_normals(
 /// and travel into the hemisphere of its interpolated world normal. The value
 /// is the fraction of rays that hit any triangle in the mesh within the
 /// distance limit. Material slots filter destination texels only; all mesh
-/// triangles can occlude. This is a CPU primitive with no GUI or persisted
-/// document integration.
+/// triangles can occlude. The editor may run this primitive on a worker and
+/// install the encoded output as an editable layer; the per-set settings are
+/// stored as project metadata by the editor.
 pub fn bake_ambient_occlusion(
     mesh: &Mesh,
     options: AmbientOcclusionBakeOptions<'_>,
     cancel: &AtomicBool,
+) -> Result<BakedAmbientOcclusion> {
+    bake_ambient_occlusion_with_progress(mesh, options, cancel, |_| {})
+}
+
+fn bake_ambient_occlusion_with_progress(
+    mesh: &Mesh,
+    options: AmbientOcclusionBakeOptions<'_>,
+    cancel: &AtomicBool,
+    mut report_completed_rows: impl FnMut(u32),
 ) -> Result<BakedAmbientOcclusion> {
     mesh.validate()?;
     if options.sample_count == 0 || options.sample_count > MAX_AO_SAMPLES_PER_TEXEL {
@@ -405,6 +1158,7 @@ pub fn bake_ambient_occlusion(
             }
             occlusion[index] = hits as f32 / options.sample_count as f32;
         }
+        report_completed_rows(y + 1);
     }
 
     Ok(BakedAmbientOcclusion {
@@ -901,7 +1655,11 @@ mod tests {
     use super::*;
     use crate::mesh::Vertex;
     use serde_json::Map;
-    use std::sync::atomic::AtomicBool;
+    use std::{
+        sync::atomic::AtomicBool,
+        thread,
+        time::{Duration, Instant},
+    };
 
     fn triangle_mesh() -> Mesh {
         Mesh {
@@ -914,6 +1672,7 @@ mod tests {
             indices: vec![0, 1, 2],
             materials: vec!["Default".into()],
             triangle_materials: vec![0],
+            extra_uv_sets: Default::default(),
             extensions: Map::new(),
         }
     }
@@ -929,6 +1688,7 @@ mod tests {
             indices: vec![0, 1, 2],
             materials: vec!["Default".into()],
             triangle_materials: vec![0],
+            extra_uv_sets: Default::default(),
             extensions: Map::new(),
         }
     }
@@ -938,6 +1698,7 @@ mod tests {
             position,
             normal,
             uv,
+            tangent: None,
             extensions: Map::new(),
         }
     }
@@ -951,6 +1712,151 @@ mod tests {
             128 * 1024 * 1024,
             &AtomicBool::new(false),
         )
+    }
+
+    fn two_slot_id_mesh() -> Mesh {
+        Mesh {
+            name: "Two-slot ID bake".into(),
+            vertices: vec![
+                vertex([0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.1, 0.1]),
+                vertex([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.45, 0.1]),
+                vertex([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.1, 0.45]),
+                vertex([2.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.55, 0.55]),
+                vertex([3.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.9, 0.55]),
+                vertex([2.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.55, 0.9]),
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            materials: vec!["First".into(), "Second".into()],
+            triangle_materials: vec![0, 1],
+            extra_uv_sets: Default::default(),
+            extensions: Map::new(),
+        }
+    }
+
+    #[test]
+    fn material_id_bake_encodes_slots_and_leaves_uv_gaps_transparent() {
+        let mesh = two_slot_id_mesh();
+        let image = bake_material_id(
+            &mesh,
+            64,
+            &[None, None],
+            1,
+            64 * 64 * 4,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(image.get_pixel(10, 10).0, [0, 0, 0, 255]);
+        assert_eq!(image.get_pixel(40, 40).0, [1, 0, 0, 255]);
+        assert_eq!(image.get_pixel(30, 30).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn material_id_bake_filters_by_texture_set_and_is_deterministic() {
+        let mesh = two_slot_id_mesh();
+        let all = bake_material_id(
+            &mesh,
+            64,
+            &[None, None],
+            1,
+            64 * 64 * 4,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let repeated = bake_material_id(
+            &mesh,
+            64,
+            &[None, None],
+            1,
+            64 * 64 * 4,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(all, repeated);
+
+        let filtered = bake_material_id(
+            &mesh,
+            64,
+            &[None, Some(2)],
+            1,
+            64 * 64 * 4,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(filtered.get_pixel(10, 10).0[3], 255);
+        assert_eq!(filtered.get_pixel(40, 40).0[3], 0);
+    }
+
+    #[test]
+    fn material_id_bake_rejects_invalid_bounds_and_cancellation() {
+        let mesh = two_slot_id_mesh();
+        assert!(bake_material_id(
+            &mesh,
+            32,
+            &[None, None],
+            1,
+            u64::MAX,
+            &AtomicBool::new(false),
+        )
+        .is_err());
+        assert!(bake_material_id(
+            &mesh,
+            64,
+            &[None, None],
+            1,
+            64 * 64 * 4 - 1,
+            &AtomicBool::new(false),
+        )
+        .is_err());
+        let canceled = AtomicBool::new(true);
+        let error = bake_material_id(&mesh, 64, &[None, None], 1, u64::MAX, &canceled).unwrap_err();
+        assert!(error.to_string().contains("canceled"));
+    }
+
+    #[test]
+    fn material_id_bake_overlap_is_owned_by_first_triangle() {
+        let mut mesh = two_slot_id_mesh();
+        mesh.vertices.extend([
+            vertex([0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.1, 0.1]),
+            vertex([1.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.45, 0.1]),
+            vertex([0.0, 1.0, 1.0], [0.0, 0.0, 1.0], [0.1, 0.45]),
+        ]);
+        mesh.indices.extend([6, 7, 8]);
+        mesh.triangle_materials.push(1);
+        let image = bake_material_id(
+            &mesh,
+            64,
+            &[None, None],
+            1,
+            64 * 64 * 4,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(image.get_pixel(10, 10).0, [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn material_id_worker_delivers_result_once() {
+        let mut worker = MaterialIdBakeWorker::spawn(
+            two_slot_id_mesh(),
+            MaterialIdBakeJobOptions {
+                size: 64,
+                bindings: vec![None, None],
+                active_set_id: 1,
+                working_budget_bytes: 64 * 64 * 4,
+            },
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let result = loop {
+            if let Some(result) = worker.try_take_result() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline, "ID bake worker did not finish");
+            thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(result.get_pixel(10, 10).0, [0, 0, 0, 255]);
+        assert_eq!(result.get_pixel(40, 40).0, [1, 0, 0, 255]);
+        assert!(worker.try_take_result().is_none());
     }
 
     #[test]
@@ -1167,6 +2073,64 @@ mod tests {
         )
     }
 
+    fn ao_job_options(size: u32, sample_count: u32) -> AmbientOcclusionBakeJobOptions {
+        AmbientOcclusionBakeJobOptions {
+            size,
+            bindings: vec![None],
+            active_set_id: 1,
+            sample_count,
+            max_ray_distance: 0.5,
+            seed: 17,
+            working_budget_bytes: 128 * 1024 * 1024,
+        }
+    }
+
+    fn wait_for_worker_result(
+        worker: &mut AmbientOcclusionBakeWorker,
+    ) -> Result<BakedAmbientOcclusion> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(result) = worker.try_take_result() {
+                return result;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "AO worker did not finish in time"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn ambient_occlusion_worker_delivers_deterministic_result_and_row_progress() {
+        let mesh = triangle_mesh();
+        let expected = ao(&mesh, &[None], 4, 17).unwrap();
+        let mut worker = AmbientOcclusionBakeWorker::spawn(mesh, ao_job_options(64, 4)).unwrap();
+        let result = wait_for_worker_result(&mut worker).unwrap();
+
+        assert_eq!(worker.progress().total_rows, 64);
+        assert_eq!(worker.progress().completed_rows, 64);
+        assert_eq!(result.occlusion, expected.occlusion);
+        assert_eq!(result.valid, expected.valid);
+        assert!(
+            worker.try_take_result().is_none(),
+            "result is delivered once"
+        );
+    }
+
+    #[test]
+    fn ambient_occlusion_worker_cancellation_is_nonblocking_and_returns_error() {
+        let mesh = triangle_mesh();
+        let mut options = ao_job_options(1024, 64);
+        options.working_budget_bytes = 256 * 1024 * 1024;
+        let mut worker = AmbientOcclusionBakeWorker::spawn(mesh, options).unwrap();
+        worker.cancel();
+
+        let error = wait_for_worker_result(&mut worker).unwrap_err();
+        assert!(error.to_string().contains("canceled"));
+        assert!(worker.progress().completed_rows <= worker.progress().total_rows);
+    }
+
     #[test]
     fn ambient_occlusion_plane_without_blocker_is_open_and_seed_deterministic() {
         let mesh = triangle_mesh();
@@ -1177,6 +2141,10 @@ mod tests {
         assert_eq!(first.occlusion, repeated.occlusion);
         assert_eq!(first.valid, repeated.valid);
         assert!(!first.is_valid(63, 63));
+
+        let image = first.occlusion_image().unwrap();
+        assert_eq!(image.get_pixel(24, 24).0, [255, 255, 255, 255]);
+        assert_eq!(image.get_pixel(63, 63).0, [255, 255, 255, 0]);
     }
 
     #[test]
@@ -1199,6 +2167,47 @@ mod tests {
         // cosine-weighted hemisphere predicts about 75% of rays reach it.
         assert!((0.65..=0.85).contains(&value), "occlusion={value}");
         assert!(!maps.is_valid(63, 63));
+
+        let image = maps.occlusion_image().unwrap();
+        let encoded = image.get_pixel(24, 24).0;
+        let expected = ((1.0 - value) * 255.0).round() as u8;
+        assert_eq!(encoded, [expected, expected, expected, 255]);
+        assert!((38..=90).contains(&encoded[0]), "encoded AO={encoded:?}");
+        assert_eq!(image.get_pixel(63, 63).0, [255, 255, 255, 0]);
+    }
+
+    #[test]
+    fn ambient_occlusion_image_clamps_finite_and_safely_handles_nonfinite_values() {
+        let mut values = vec![0.0; 64 * 64];
+        let mut valid = vec![0; 64 * 64];
+        for (index, value) in [0.0, 0.5, 1.0, -0.25, 1.25, f32::NAN]
+            .into_iter()
+            .enumerate()
+        {
+            values[index] = value;
+            valid[index] = 1;
+        }
+        let image = BakedAmbientOcclusion {
+            size: 64,
+            occlusion: values,
+            valid,
+        }
+        .occlusion_image()
+        .unwrap();
+        assert_eq!(image.get_pixel(0, 0).0, [255, 255, 255, 255]);
+        assert_eq!(image.get_pixel(1, 0).0, [128, 128, 128, 255]);
+        assert_eq!(image.get_pixel(2, 0).0, [0, 0, 0, 255]);
+        assert_eq!(image.get_pixel(3, 0).0, [255, 255, 255, 255]);
+        assert_eq!(image.get_pixel(4, 0).0, [0, 0, 0, 255]);
+        assert_eq!(image.get_pixel(5, 0).0, [255, 255, 255, 255]);
+        assert_eq!(image.get_pixel(6, 0).0, [255, 255, 255, 0]);
+
+        let malformed = BakedAmbientOcclusion {
+            size: 64,
+            occlusion: vec![0.0],
+            valid: vec![0],
+        };
+        assert!(malformed.occlusion_image().is_err());
     }
 
     #[test]
@@ -1226,5 +2235,85 @@ mod tests {
         let canceled = AtomicBool::new(true);
         let error = bake_ambient_occlusion(&mesh, options, &canceled).unwrap_err();
         assert!(error.to_string().contains("canceled"));
+    }
+
+    #[test]
+    fn material_id_outputs_write_matching_png_and_metadata_and_replace_as_a_pair() {
+        let output = std::env::temp_dir().join(format!(
+            "kalium-material-id-output-{}.png",
+            uuid::Uuid::new_v4()
+        ));
+        let mesh = triangle_mesh();
+        let image =
+            bake_material_id(&mesh, 64, &[None], 7, 64 * 64 * 4, &AtomicBool::new(false)).unwrap();
+        let metadata = material_id_metadata(&mesh, 64, 7, "Leather", true).unwrap();
+        let sidecar = write_material_id_outputs(&image, &metadata, &output).unwrap();
+        let decoded = image::open(&output).unwrap().to_rgba8();
+        assert_eq!(decoded, image);
+        assert_eq!(sidecar, PathBuf::from(format!("{}.json", output.display())));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&sidecar).unwrap()).unwrap(),
+            metadata
+        );
+
+        let replacement = RgbaImage::from_pixel(64, 64, Rgba([9, 8, 7, 6]));
+        let replacement_metadata = material_id_metadata(&mesh, 64, 7, "Leather", true).unwrap();
+        write_material_id_outputs(&replacement, &replacement_metadata, &output).unwrap();
+        assert_eq!(image::open(&output).unwrap().to_rgba8(), replacement);
+        let _ = fs::remove_file(&output);
+        let _ = fs::remove_file(sidecar);
+    }
+
+    #[test]
+    fn material_id_output_failure_restores_existing_png_and_refuses_sidecar_directory() {
+        let output = std::env::temp_dir().join(format!(
+            "kalium-material-id-output-failure-{}.png",
+            uuid::Uuid::new_v4()
+        ));
+        let sidecar = PathBuf::from(format!("{}.json", output.display()));
+        let old_png = b"previous png bytes";
+        fs::write(&output, old_png).unwrap();
+        fs::create_dir(&sidecar).unwrap();
+        let image = RgbaImage::from_pixel(64, 64, Rgba([1, 2, 3, 4]));
+
+        assert!(write_material_id_outputs(&image, &serde_json::json!({}), &output).is_err());
+        assert_eq!(fs::read(&output).unwrap(), old_png);
+        assert!(sidecar.is_dir());
+
+        let _ = fs::remove_file(output);
+        let _ = fs::remove_dir_all(sidecar);
+    }
+
+    #[test]
+    fn high_to_low_output_failure_restores_existing_bundle_members() {
+        let output_dir = std::env::temp_dir().join(format!(
+            "kalium-high-to-low-output-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&output_dir).unwrap();
+        let normal_path = output_dir.join("Kalium_HighToLow_WorldNormal.png");
+        let coverage_path = output_dir.join("Kalium_HighToLow_Coverage.png");
+        let old_normal = b"previous normal bytes";
+        fs::write(&normal_path, old_normal).unwrap();
+        fs::create_dir(&coverage_path).unwrap();
+        let maps = BakedMeshMaps {
+            size: 1,
+            positions: vec![[0.0, 0.0, 0.0]],
+            world_normals: vec![[0.0, 0.0, 1.0]],
+            valid: vec![1],
+            position_min: [0.0; 3],
+            position_max: [1.0; 3],
+        };
+
+        assert!(write_high_to_low_outputs(&maps, &serde_json::json!({}), &output_dir).is_err());
+        assert_eq!(fs::read(&normal_path).unwrap(), old_normal);
+        assert!(coverage_path.is_dir());
+        assert!(!output_dir.join("Kalium_HighToLow_Metadata.json").exists());
+        assert_eq!(
+            fs::read_dir(&output_dir).unwrap().count(),
+            2,
+            "staged and backup files should be cleaned after a publication failure"
+        );
+        let _ = fs::remove_dir_all(output_dir);
     }
 }

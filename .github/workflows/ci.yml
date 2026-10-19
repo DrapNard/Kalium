@@ -26,6 +26,18 @@ jobs:
         run: cargo test --locked --all-targets
       - name: Run Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Audit dependency licenses
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+          arguments: --all-features
+      - name: Audit dependency advisories
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+          arguments: --all-features
+      - name: Verify distributable source package
+        run: cargo package --locked
       - name: CLI smoke test
         run: |
           cargo run --locked -- --version
@@ -33,3 +45,41 @@ jobs:
           cargo run --locked -- preview examples/Kalium-Demo.kalium ./kalium-preview.png
           cargo run --locked -- brush-inspect examples/Soft-Painter.kbrush
           cargo run --locked -- uv-mask examples/Kalium-Demo.kalium ./kalium-uv-mask.png
+      - name: Verify CLI output artifacts
+        run: |
+          cargo build --locked
+          scripts/qa/cli_release_smoke.sh target/debug/kalium
+
+  windows-source-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Compile all targets
+        run: cargo check --locked --all-targets
+      - name: Check opt-in compute path
+        run: cargo check --locked --all-targets --features gpu-experimental
+      - name: Run unit tests
+        run: cargo test --locked --all-targets
+      - name: Run strict Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  macos-source-check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Compile all targets
+        run: cargo check --locked --all-targets
+      - name: Check opt-in compute path
+        run: cargo check --locked --all-targets --features gpu-experimental
+      - name: Run unit tests
+        run: cargo test --locked --all-targets
+      - name: Run strict Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings

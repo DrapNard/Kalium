@@ -13,6 +13,90 @@ pub enum BrushMode {
     Bucket,
 }
 
+const MAX_ALPHA_TIP_DIMENSION: u32 = 64;
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BrushTip {
+    #[default]
+    Round,
+    Alpha {
+        width: u32,
+        height: u32,
+        mask: Vec<u8>,
+    },
+}
+
+impl BrushTip {
+    pub fn alpha(width: u32, height: u32, mask: Vec<u8>) -> Result<Self> {
+        let tip = Self::Alpha {
+            width,
+            height,
+            mask,
+        };
+        tip.validate()?;
+        Ok(tip)
+    }
+
+    #[cfg(feature = "gpu-experimental")]
+    pub fn is_round(&self) -> bool {
+        matches!(self, Self::Round)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if let Self::Alpha {
+            width,
+            height,
+            mask,
+        } = self
+        {
+            if !(1..=MAX_ALPHA_TIP_DIMENSION).contains(width)
+                || !(1..=MAX_ALPHA_TIP_DIMENSION).contains(height)
+                || (*width as usize).checked_mul(*height as usize) != Some(mask.len())
+            {
+                bail!("Alpha brush tip must be a complete mask no larger than 64×64");
+            }
+        }
+        Ok(())
+    }
+
+    fn coverage(&self, x: f32, y: f32, hardness: f32) -> f32 {
+        let (distance, mask_coverage) = match self {
+            Self::Round => ((x * x + y * y).sqrt(), 1.0),
+            Self::Alpha {
+                width,
+                height,
+                mask,
+            } => {
+                if *width == 0
+                    || *height == 0
+                    || *width > MAX_ALPHA_TIP_DIMENSION
+                    || *height > MAX_ALPHA_TIP_DIMENSION
+                    || (*width as usize).checked_mul(*height as usize) != Some(mask.len())
+                    || x.abs() > 1.0
+                    || y.abs() > 1.0
+                {
+                    return 0.0;
+                }
+                let sample_x = ((x * 0.5 + 0.5) * (*width - 1) as f32).round() as usize;
+                let sample_y = ((y * 0.5 + 0.5) * (*height - 1) as f32).round() as usize;
+                let index = sample_y * *width as usize + sample_x;
+                (x.abs().max(y.abs()), mask[index] as f32 / 255.0)
+            }
+        };
+        if distance > 1.0 || mask_coverage <= 0.0 {
+            return 0.0;
+        }
+        let feather = if distance <= hardness {
+            1.0
+        } else {
+            let t = ((distance - hardness) / (1.0 - hardness).max(0.0001)).clamp(0.0, 1.0);
+            1.0 - t * t * (3.0 - 2.0 * t)
+        };
+        mask_coverage * feather
+    }
+}
+
 impl BrushMode {
     pub const ALL: [Self; 6] = [
         Self::Paint,
@@ -49,6 +133,8 @@ pub struct Brush {
     pub grayscale: u8,
     pub mirror_u: bool,
     #[serde(default)]
+    pub tip: BrushTip,
+    #[serde(default)]
     pub tolerance: u8,
 }
 
@@ -63,6 +149,7 @@ impl Default for Brush {
             color: [225, 99, 137, 255],
             grayscale: 175,
             mirror_u: false,
+            tip: BrushTip::Round,
             tolerance: 0,
         }
     }
@@ -82,6 +169,7 @@ impl Brush {
         if !self.spacing.is_finite() || !(0.1..=4.0).contains(&self.spacing) {
             bail!("Invalid spacing");
         }
+        self.tip.validate()?;
         Ok(())
     }
     #[allow(dead_code)] // Public API for future brush plugins; GUI uses the UV-aware variant.
@@ -112,6 +200,14 @@ impl Brush {
         if matches!(self.mode, BrushMode::Sample | BrushMode::Bucket) {
             return true;
         }
+        let selected_id = doc.layer_tree.selected_node_id;
+        if self.mode.is_mask() {
+            if doc.layer_tree.find_node(selected_id).is_none() {
+                return true;
+            }
+        } else if doc.selected_paint_layer().is_none() {
+            return true;
+        }
         if uv.iter().any(|v| !v.is_finite()) {
             return true;
         }
@@ -123,9 +219,6 @@ impl Brush {
         let min_y = (cy - radius - 1.0).floor().max(0.0) as u32;
         let max_x = (cx + radius + 1.0).ceil().min((size - 1) as f32) as u32;
         let max_y = (cy + radius + 1.0).ceil().min((size - 1) as f32) as u32;
-        if min_x <= max_x && min_y <= max_y && !before_rect(doc, min_x, min_y, max_x, max_y) {
-            return false;
-        }
         let mode = self.mode;
         let hardness = self.hardness.clamp(0.0, 1.0);
         let target = if channel.is_color() {
@@ -133,31 +226,60 @@ impl Brush {
         } else {
             [self.grayscale, self.grayscale, self.grayscale, 255]
         };
-        let layer = doc.selected_layer_mut();
+        if self.opacity <= 0.0
+            || (mode == BrushMode::Erase
+                && doc
+                    .selected_paint_layer()
+                    .is_some_and(|layer| !layer.pixels.contains_key(&channel)))
+            || (mode != BrushMode::Erase && channel.is_color() && target[3] == 0)
+        {
+            return true;
+        }
+        let channel_missing = !mode.is_mask()
+            && doc
+                .selected_paint_layer()
+                .is_some_and(|layer| !layer.pixels.contains_key(&channel));
+        if channel_missing {
+            let has_effective_pixel = (min_y..=max_y).any(|y| {
+                (min_x..=max_x).any(|x| {
+                    coverage.is_none_or(|cover| cover.contains(x, y))
+                        && self.tip.coverage(
+                            (x as f32 - cx) / radius,
+                            (y as f32 - cy) / radius,
+                            hardness,
+                        ) > 0.0
+                })
+            });
+            if !has_effective_pixel {
+                return true;
+            }
+            if doc.ensure_selected_channel_capacity(channel).is_err() {
+                return false;
+            }
+        }
+        if min_x <= max_x && min_y <= max_y && !before_rect(doc, min_x, min_y, max_x, max_y) {
+            return false;
+        }
         if mode.is_mask() {
+            let Some(node) = doc.layer_tree.find_node_mut(selected_id) else {
+                return true;
+            };
+            let mask = node.mask_mut();
             for y in min_y..=max_y {
                 for x in min_x..=max_x {
                     if coverage.is_some_and(|cover| !cover.contains(x, y)) {
                         continue;
                     }
-                    let dx = x as f32 - cx;
-                    let dy = y as f32 - cy;
-                    let distance = (dx * dx + dy * dy).sqrt() / radius;
-                    if distance > 1.0 {
-                        continue;
-                    }
-                    let feather = if distance <= hardness {
-                        1.0
-                    } else {
-                        let t =
-                            ((distance - hardness) / (1.0 - hardness).max(0.0001)).clamp(0.0, 1.0);
-                        1.0 - t * t * (3.0 - 2.0 * t)
-                    };
-                    let a = (self.opacity * feather).clamp(0.0, 1.0);
+                    let coverage = self.tip.coverage(
+                        (x as f32 - cx) / radius,
+                        (y as f32 - cy) / radius,
+                        hardness,
+                    );
+                    let a = (self.opacity * coverage).clamp(0.0, 1.0);
                     if a <= 0.0 {
                         continue;
                     }
-                    let pixel = layer.mask.get_pixel_mut(x, y);
+                    let pixel = mask.get_pixel_mut(x, y);
                     let target = if mode == BrushMode::MaskWhite {
                         255.0
                     } else {
@@ -166,28 +288,24 @@ impl Brush {
                     pixel.0[0] = (pixel.0[0] as f32 * (1.0 - a) + target * a).round() as u8;
                 }
             }
+            return true;
         }
-        if !mode.is_mask() {
+        let layer = doc
+            .selected_paint_layer_mut()
+            .expect("selected Paint layer was checked");
+        {
             let image = layer.pixels_mut(channel, size);
             for y in min_y..=max_y {
                 for x in min_x..=max_x {
                     if coverage.is_some_and(|cover| !cover.contains(x, y)) {
                         continue;
                     }
-                    let dx = x as f32 - cx;
-                    let dy = y as f32 - cy;
-                    let distance = (dx * dx + dy * dy).sqrt() / radius;
-                    if distance > 1.0 {
-                        continue;
-                    }
-                    let feather = if distance <= hardness {
-                        1.0
-                    } else {
-                        let t =
-                            ((distance - hardness) / (1.0 - hardness).max(0.0001)).clamp(0.0, 1.0);
-                        1.0 - t * t * (3.0 - 2.0 * t)
-                    };
-                    let a = (self.opacity * feather).clamp(0.0, 1.0);
+                    let coverage = self.tip.coverage(
+                        (x as f32 - cx) / radius,
+                        (y as f32 - cy) / radius,
+                        hardness,
+                    );
+                    let a = (self.opacity * coverage).clamp(0.0, 1.0);
                     if a <= 0.0 {
                         continue;
                     }
@@ -283,7 +401,8 @@ impl Brush {
         to: [f32; 2],
         coverage: Option<&UvCoverage>,
         mut before_rect: F,
-    ) where
+    ) -> bool
+    where
         F: FnMut(&Document, u32, u32, u32, u32) -> bool,
     {
         let mut stamp = |uv: [f32; 2], doc: &mut Document| {
@@ -291,6 +410,9 @@ impl Brush {
                 return false;
             }
             if self.mirror_u {
+                if (uv[0] - 0.5).abs() <= f32::EPSILON {
+                    return true;
+                }
                 return self.stamp_masked_recording(
                     doc,
                     channel,
@@ -302,16 +424,14 @@ impl Brush {
             true
         };
         let Some(from) = from else {
-            stamp(to, doc);
-            return;
+            return stamp(to, doc);
         };
         let du = from[0] - to[0];
         let dv = from[1] - to[1];
         let dist = (du * du + dv * dv).sqrt() * doc.size as f32;
         // UV islands must not be connected by a long cross-atlas stroke.
         if dist > doc.size as f32 * 0.24 {
-            stamp(to, doc);
-            return;
+            return stamp(to, doc);
         }
         let spacing = (self.radius.max(1) as f32 * self.spacing.max(0.1)).max(1.0);
         let steps = (dist / spacing).ceil().clamp(1.0, 1024.0) as usize;
@@ -324,9 +444,10 @@ impl Brush {
                 ],
                 doc,
             ) {
-                return;
+                return false;
             }
         }
+        true
     }
 }
 
@@ -378,6 +499,7 @@ fn encode_normal(normal: [f32; 3], encoded: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layer_tree::{FillLayer, LayerGroup, LayerNode, LayerNodeProperties};
     #[test]
     fn painting_changes_only_pixels_in_brush() {
         let mut doc = Document::new(64);
@@ -389,12 +511,137 @@ mod tests {
         };
         brush.stamp(&mut doc, Channel::BaseColor, [0.5, 0.5]);
         let pixels = doc
-            .selected_layer()
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
             .pixels
             .get(&Channel::BaseColor)
             .unwrap();
         assert_eq!(pixels.get_pixel(0, 0).0, [0, 0, 0, 0]);
         assert!(pixels.get_pixel(32, 32).0[3] > 0);
+    }
+
+    #[test]
+    fn erasing_an_absent_channel_does_not_allocate_it() {
+        let mut doc = Document::new(64);
+        let brush = Brush {
+            mode: BrushMode::Erase,
+            radius: 8,
+            opacity: 1.0,
+            ..Brush::default()
+        };
+
+        brush.stamp(&mut doc, Channel::BaseColor, [0.5, 0.5]);
+
+        assert!(!doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels
+            .contains_key(&Channel::BaseColor));
+    }
+
+    #[test]
+    fn alpha_tip_limits_paint_to_its_mask_pixels() {
+        let mut doc = Document::new(64);
+        let brush = Brush {
+            radius: 5,
+            opacity: 1.0,
+            hardness: 1.0,
+            tip: BrushTip::alpha(3, 3, vec![0, 0, 0, 0, 255, 0, 0, 0, 0]).unwrap(),
+            ..Brush::default()
+        };
+        brush.stamp(&mut doc, Channel::BaseColor, [0.5, 0.5]);
+        let pixels = doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels
+            .get(&Channel::BaseColor)
+            .unwrap();
+        assert!(pixels.get_pixel(32, 32).0[3] > 0);
+        assert_eq!(pixels.get_pixel(28, 32).0[3], 0);
+        assert_eq!(pixels.get_pixel(32, 28).0[3], 0);
+    }
+
+    #[test]
+    fn alpha_tip_applies_to_layer_mask_strokes() {
+        let mut doc = Document::new(64);
+        let brush = Brush {
+            radius: 5,
+            opacity: 1.0,
+            hardness: 1.0,
+            mode: BrushMode::MaskBlack,
+            tip: BrushTip::alpha(3, 3, vec![0, 0, 0, 0, 255, 0, 0, 0, 0]).unwrap(),
+            ..Brush::default()
+        };
+        brush.stamp(&mut doc, Channel::BaseColor, [0.5, 0.5]);
+        let mask = &doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .mask;
+        assert_eq!(mask.get_pixel(32, 32).0[0], 0);
+        assert_eq!(mask.get_pixel(28, 32).0[0], 255);
+    }
+
+    #[test]
+    fn mask_brush_targets_fill_and_group_nodes_only() {
+        for is_group in [false, true] {
+            let mut doc = Document::new(64);
+            let base_id = doc.layer_tree.selected_node_id;
+            let id = doc.layer_tree.next_node_id;
+            let properties = LayerNodeProperties::new(id, "Mask target", 64).unwrap();
+            let node = if is_group {
+                LayerNode::Group(LayerGroup {
+                    properties,
+                    children: Vec::new(),
+                })
+            } else {
+                LayerNode::Fill(FillLayer {
+                    properties,
+                    values: [(Channel::BaseColor, [255; 4])].into_iter().collect(),
+                })
+            };
+            doc.layer_tree.roots.push(node);
+            doc.layer_tree.selected_node_id = id;
+            doc.layer_tree.next_node_id = id + 1;
+            let brush = Brush {
+                radius: 2,
+                hardness: 1.0,
+                mode: BrushMode::MaskBlack,
+                ..Brush::default()
+            };
+            brush.stamp(&mut doc, Channel::BaseColor, [0.5, 0.5]);
+            let target_mask = doc.layer_tree.find_node(id).unwrap().mask();
+            assert!(target_mask.get_pixel(32, 32).0[0] < 255);
+            assert_eq!(
+                doc.layer_tree
+                    .find_node(base_id)
+                    .unwrap()
+                    .mask()
+                    .get_pixel(32, 32)
+                    .0,
+                [255]
+            );
+
+            let ordinary = Brush::default();
+            ordinary.stamp(&mut doc, Channel::BaseColor, [0.5, 0.5]);
+            assert!(matches!(
+                doc.layer_tree.find_node(id),
+                Some(LayerNode::Fill(_) | LayerNode::Group(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn malformed_alpha_tip_is_rejected_without_panicking_during_validation() {
+        let brush = Brush {
+            tip: BrushTip::Alpha {
+                width: 0,
+                height: 1,
+                mask: Vec::new(),
+            },
+            ..Brush::default()
+        };
+        assert!(brush.validate().is_err());
+        assert_eq!(brush.tip.coverage(0.0, 0.0, 1.0), 0.0);
     }
     #[test]
     fn eraser_removes_alpha() {
@@ -409,7 +656,8 @@ mod tests {
         brush.mode = BrushMode::Erase;
         brush.stamp(&mut doc, Channel::BaseColor, [0.5, 0.5]);
         let pixels = doc
-            .selected_layer()
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
             .pixels
             .get(&Channel::BaseColor)
             .unwrap();
@@ -419,7 +667,8 @@ mod tests {
     #[test]
     fn base_color_blends_in_linear_light_with_straight_alpha() {
         let mut doc = Document::new(64);
-        doc.selected_layer_mut()
+        doc.selected_paint_layer_mut()
+            .expect("test selects a Paint layer")
             .pixels_mut(Channel::BaseColor, 64)
             .put_pixel(32, 32, image::Rgba([0, 0, 255, 255]));
         let brush = Brush {
@@ -432,14 +681,19 @@ mod tests {
 
         brush.stamp(&mut doc, Channel::BaseColor, [0.5, 0.5]);
 
-        let pixel = doc.selected_layer().pixels[&Channel::BaseColor].get_pixel(32, 32);
+        let pixel = doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::BaseColor]
+            .get_pixel(32, 32);
         assert_eq!(pixel.0, [188, 0, 188, 255]);
     }
 
     #[test]
     fn emissive_blends_in_linear_light_with_straight_alpha() {
         let mut doc = Document::new(64);
-        doc.selected_layer_mut()
+        doc.selected_paint_layer_mut()
+            .expect("test selects a Paint layer")
             .pixels_mut(Channel::Emissive, 64)
             .put_pixel(32, 32, image::Rgba([0, 0, 255, 255]));
         let brush = Brush {
@@ -452,7 +706,11 @@ mod tests {
 
         brush.stamp(&mut doc, Channel::Emissive, [0.5, 0.5]);
 
-        let pixel = doc.selected_layer().pixels[&Channel::Emissive].get_pixel(32, 32);
+        let pixel = doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::Emissive]
+            .get_pixel(32, 32);
         assert_eq!(pixel.0[0], 188);
         assert_eq!(pixel.0[1], 0);
         assert!((187..=188).contains(&pixel.0[2]));
@@ -472,14 +730,19 @@ mod tests {
 
         brush.stamp(&mut doc, Channel::Emissive, [0.5, 0.5]);
 
-        let pixel = doc.selected_layer().pixels[&Channel::Emissive].get_pixel(32, 32);
+        let pixel = doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::Emissive]
+            .get_pixel(32, 32);
         assert_eq!(pixel.0, [31, 127, 233, 128]);
     }
 
     #[test]
     fn normal_brush_interpolates_orientations_and_renormalizes() {
         let mut doc = Document::new(64);
-        doc.selected_layer_mut()
+        doc.selected_paint_layer_mut()
+            .expect("test selects a Paint layer")
             .pixels_mut(Channel::Normal, 64)
             .put_pixel(32, 32, image::Rgba([128, 128, 255, 255]));
         let brush = Brush {
@@ -492,7 +755,11 @@ mod tests {
 
         brush.stamp(&mut doc, Channel::Normal, [0.5, 0.5]);
 
-        let pixel = doc.selected_layer().pixels[&Channel::Normal].get_pixel(32, 32);
+        let pixel = doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::Normal]
+            .get_pixel(32, 32);
         let decoded = decode_normal(&pixel.0[..3]);
         assert!((pixel.0[0] as i16 - 176).abs() <= 2);
         assert!((pixel.0[1] as i16 - 128).abs() <= 1);
@@ -515,7 +782,11 @@ mod tests {
             brush.stamp(&mut doc, Channel::Normal, [0.5, 0.5]);
         }
 
-        let pixel = doc.selected_layer().pixels[&Channel::Normal].get_pixel(32, 32);
+        let pixel = doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::Normal]
+            .get_pixel(32, 32);
         let raw = [
             pixel.0[0] as f32 / 127.5 - 1.0,
             pixel.0[1] as f32 / 127.5 - 1.0,
@@ -531,7 +802,11 @@ mod tests {
             ..brush
         };
         once.stamp(&mut transparent, Channel::Normal, [0.5, 0.5]);
-        let pixel = transparent.selected_layer().pixels[&Channel::Normal].get_pixel(32, 32);
+        let pixel = transparent
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::Normal]
+            .get_pixel(32, 32);
         assert_eq!(pixel.0[3], 64);
         let expected = decode_normal(&[196, 72, 230]);
         let mut expected_encoded = [0; 3];
@@ -550,7 +825,10 @@ mod tests {
             ..Brush::default()
         };
         brush.stamp(&mut doc, Channel::Normal, [0.5, 0.5]);
-        let before = doc.selected_layer().pixels[&Channel::Normal]
+        let before = doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::Normal]
             .get_pixel(32, 32)
             .0;
         let eraser = Brush {
@@ -559,7 +837,10 @@ mod tests {
             ..brush
         };
         eraser.stamp(&mut doc, Channel::Normal, [0.5, 0.5]);
-        let after = doc.selected_layer().pixels[&Channel::Normal]
+        let after = doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::Normal]
             .get_pixel(32, 32)
             .0;
         assert_eq!(&after[..3], &before[..3]);
@@ -579,7 +860,11 @@ mod tests {
 
         brush.stamp(&mut doc, Channel::BaseColor, [0.5, 0.5]);
 
-        let pixel = doc.selected_layer().pixels[&Channel::BaseColor].get_pixel(32, 32);
+        let pixel = doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::BaseColor]
+            .get_pixel(32, 32);
         assert_eq!(pixel.0, [31, 127, 233, 128]);
     }
 
@@ -587,7 +872,8 @@ mod tests {
     fn zero_opacity_base_color_paint_does_not_change_pixel() {
         let mut doc = Document::new(64);
         let before = [45, 120, 210, 173];
-        doc.selected_layer_mut()
+        doc.selected_paint_layer_mut()
+            .expect("test selects a Paint layer")
             .pixels_mut(Channel::BaseColor, 64)
             .put_pixel(32, 32, image::Rgba(before));
         let brush = Brush {
@@ -600,8 +886,52 @@ mod tests {
 
         brush.stamp(&mut doc, Channel::BaseColor, [0.5, 0.5]);
 
-        let pixel = doc.selected_layer().pixels[&Channel::BaseColor].get_pixel(32, 32);
+        let pixel = doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::BaseColor]
+            .get_pixel(32, 32);
         assert_eq!(pixel.0, before);
+    }
+
+    #[test]
+    fn zero_opacity_paint_does_not_allocate_an_absent_channel() {
+        let mut doc = Document::new(64);
+        let brush = Brush {
+            radius: 8,
+            opacity: 0.0,
+            ..Brush::default()
+        };
+
+        brush.stamp(&mut doc, Channel::BaseColor, [0.5, 0.5]);
+
+        assert!(!doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels
+            .contains_key(&Channel::BaseColor));
+    }
+
+    #[test]
+    fn mirrored_partial_opacity_stamps_symmetry_axis_only_once() {
+        let mut doc = Document::new(64);
+        let brush = Brush {
+            radius: 1,
+            opacity: 0.5,
+            hardness: 1.0,
+            mirror_u: true,
+            color: [240, 30, 20, 255],
+            ..Brush::default()
+        };
+
+        brush.stroke_masked(&mut doc, Channel::BaseColor, None, [0.5, 0.5], None);
+
+        let pixel = doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::BaseColor]
+            .get_pixel(32, 32);
+        assert_eq!(pixel.0[3], 128);
     }
 }
 
@@ -626,7 +956,10 @@ mod uv_masked_tests {
 
         brush.stroke_masked(&mut doc, Channel::BaseColor, Some(from), to, None);
 
-        let pixels = &doc.selected_layer().pixels[&Channel::BaseColor];
+        let pixels = &doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::BaseColor];
         // A second application of 50% opacity would raise alpha from 128 to 192.
         assert_eq!(pixels.get_pixel(48, 32).0[3], 128);
         assert_eq!(pixels.get_pixel(15, 32).0[3], 128);
@@ -649,7 +982,10 @@ mod uv_masked_tests {
 
         brush.stroke_masked(&mut doc, Channel::BaseColor, Some(from), to, None);
 
-        let pixels = &doc.selected_layer().pixels[&Channel::BaseColor];
+        let pixels = &doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::BaseColor];
         assert!(pixels.get_pixel(17, 32).0[3] > 0);
         assert!(pixels.get_pixel(24, 32).0[3] > 0);
     }
@@ -663,24 +999,28 @@ mod uv_masked_tests {
                     position: [0., 0., 0.],
                     normal: [0., 0., 1.],
                     uv: [0.1, 0.1],
+                    tangent: None,
                     extensions: Default::default(),
                 },
                 Vertex {
                     position: [1., 0., 0.],
                     normal: [0., 0., 1.],
                     uv: [0.6, 0.1],
+                    tangent: None,
                     extensions: Default::default(),
                 },
                 Vertex {
                     position: [0., 1., 0.],
                     normal: [0., 0., 1.],
                     uv: [0.1, 0.6],
+                    tangent: None,
                     extensions: Default::default(),
                 },
             ],
             indices: vec![0, 1, 2],
             materials: vec![],
             triangle_materials: vec![],
+            extra_uv_sets: Default::default(),
             extensions: Default::default(),
         };
         let coverage = UvCoverage::generate(&mesh, 64).unwrap();
@@ -692,7 +1032,10 @@ mod uv_masked_tests {
             ..Brush::default()
         };
         brush.stamp_masked(&mut doc, Channel::BaseColor, [0.50, 0.50], Some(&coverage));
-        let pixels = &doc.selected_layer().pixels[&Channel::BaseColor];
+        let pixels = &doc
+            .selected_paint_layer()
+            .expect("test selects a Paint layer")
+            .pixels[&Channel::BaseColor];
         assert_eq!(pixels.get_pixel(32, 32).0[3], 0);
         assert!(pixels.get_pixel(20, 20).0[3] > 0);
     }

@@ -9,6 +9,50 @@ use glam::DVec2;
 use image::{GrayImage, Luma};
 
 const MAX_RASTER_SAMPLES: u64 = 90_000_000;
+#[allow(dead_code)] // S11 addressing groundwork; editor paths remain single-tile.
+const MIN_UDIM: u32 = 1001;
+#[allow(dead_code)] // S11 addressing groundwork; editor paths remain single-tile.
+const MAX_UDIM: u32 = 1999;
+
+/// Standard UDIM tile coordinates. U and V follow the source mesh UV axes;
+/// local V remains in Kalium's existing texture-space row convention.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct UvTileCoord {
+    pub u: i32,
+    pub v: i32,
+}
+
+impl UvTileCoord {
+    #[allow(dead_code)] // Used by tile-coverage groundwork until editor integration.
+    pub fn udim_id(self) -> Option<u32> {
+        if self.u < 0 || self.v < 0 || self.u > 9 || self.v > 99 {
+            return None;
+        }
+        let id = MIN_UDIM + self.u as u32 + 10 * self.v as u32;
+        (id <= MAX_UDIM).then_some(id)
+    }
+}
+
+/// Resolve mesh UV coordinates into an accepted standard UDIM and its local
+/// `[0, 1)` coordinates. Exact integer borders belong to the tile on the
+/// positive U/V side; negative and nonstandard tile coordinates are rejected.
+#[allow(dead_code)] // S11 groundwork; current paint paths still address one tile.
+pub fn split_udim_uv(uv: [f32; 2]) -> Option<(UvTileCoord, [f32; 2])> {
+    if uv.iter().any(|value| !value.is_finite() || *value < 0.0) {
+        return None;
+    }
+    let tile_u = uv[0].floor();
+    let tile_v = uv[1].floor();
+    if tile_u > 9.0 || tile_v > 99.0 {
+        return None;
+    }
+    let tile = UvTileCoord {
+        u: tile_u as i32,
+        v: tile_v as i32,
+    };
+    tile.udim_id()?;
+    Some((tile, [uv[0] - tile_u, uv[1] - tile_v]))
+}
 
 #[derive(Clone)]
 pub struct UvCoverage {
@@ -22,7 +66,7 @@ impl UvCoverage {
         if !(64..=4096).contains(&size) {
             bail!("UV coverage dimension must be between 64 and 4096");
         }
-        Self::generate_filtered(mesh, size, None)
+        Self::generate_filtered(mesh, size, None, None)
     }
     /// Only UVs of triangles assigned to the selected Texture Set are paintable.
     pub fn generate_for_set(
@@ -31,12 +75,35 @@ impl UvCoverage {
         bindings: &[Option<u32>],
         active_id: u32,
     ) -> Result<Self> {
-        Self::generate_filtered(mesh, size, Some((bindings, active_id)))
+        Self::generate_filtered(mesh, size, Some((bindings, active_id)), None)
+    }
+    /// Rasterize only the selected tile, keeping material Texture Set identity
+    /// separate from the UDIM tile coordinate.
+    #[allow(dead_code)] // S11 groundwork; storage and paint routing are pending.
+    pub fn generate_for_tile(mesh: &Mesh, size: u32, tile: UvTileCoord) -> Result<Self> {
+        if tile.udim_id().is_none() {
+            bail!("UDIM tile coordinates are outside the supported range");
+        }
+        Self::generate_filtered(mesh, size, None, Some(tile))
+    }
+    #[allow(dead_code)] // S11 groundwork; storage and paint routing are pending.
+    pub fn generate_for_tile_and_set(
+        mesh: &Mesh,
+        size: u32,
+        bindings: &[Option<u32>],
+        active_id: u32,
+        tile: UvTileCoord,
+    ) -> Result<Self> {
+        if tile.udim_id().is_none() {
+            bail!("UDIM tile coordinates are outside the supported range");
+        }
+        Self::generate_filtered(mesh, size, Some((bindings, active_id)), Some(tile))
     }
     fn generate_filtered(
         mesh: &Mesh,
         size: u32,
         filter: Option<(&[Option<u32>], u32)>,
+        tile: Option<UvTileCoord>,
     ) -> Result<Self> {
         if !(64..=4096).contains(&size) {
             bail!("UV coverage dimension must be between 64 and 4096");
@@ -57,7 +124,12 @@ impl UvCoverage {
             }
             let pixel_uv = |index: u32| {
                 let uv = mesh.vertices[index as usize].uv;
-                DVec2::new(f64::from(uv[0]), f64::from(uv[1])) * f64::from(size - 1)
+                let local = if let Some(tile) = tile {
+                    [uv[0] - tile.u as f32, uv[1] - tile.v as f32]
+                } else {
+                    uv
+                };
+                DVec2::new(f64::from(local[0]), f64::from(local[1])) * f64::from(size - 1)
             };
             let a = pixel_uv(triangle[0]);
             let b = pixel_uv(triangle[1]);
@@ -150,24 +222,28 @@ mod tests {
                     position: [0., 0., 0.],
                     normal: [0., 0., 1.],
                     uv: [0.25, 0.25],
+                    tangent: None,
                     extensions: Default::default(),
                 },
                 Vertex {
                     position: [1., 0., 0.],
                     normal: [0., 0., 1.],
                     uv: [0.75, 0.25],
+                    tangent: None,
                     extensions: Default::default(),
                 },
                 Vertex {
                     position: [0., 1., 0.],
                     normal: [0., 0., 1.],
                     uv: [0.25, 0.75],
+                    tangent: None,
                     extensions: Default::default(),
                 },
             ],
             indices: vec![0, 1, 2],
             materials: vec![],
             triangle_materials: vec![],
+            extra_uv_sets: Default::default(),
             extensions: Default::default(),
         }
     }
@@ -198,6 +274,75 @@ mod tests {
     #[test]
     fn invalid_size_is_rejected() {
         assert!(UvCoverage::generate(&small_triangle(), 5000).is_err());
+    }
+
+    #[test]
+    fn udim_addressing_uses_floor_and_positive_side_integer_boundaries() {
+        assert_eq!(
+            split_udim_uv([0.25, 0.75]),
+            Some((UvTileCoord { u: 0, v: 0 }, [0.25, 0.75]))
+        );
+        assert_eq!(
+            split_udim_uv([1.25, 0.75]),
+            Some((UvTileCoord { u: 1, v: 0 }, [0.25, 0.75]))
+        );
+        assert_eq!(
+            split_udim_uv([1.0, 1.0]),
+            Some((UvTileCoord { u: 1, v: 1 }, [0.0, 0.0]))
+        );
+        assert_eq!(UvTileCoord { u: 0, v: 0 }.udim_id(), Some(1001));
+        assert_eq!(UvTileCoord { u: 1, v: 0 }.udim_id(), Some(1002));
+        assert_eq!(UvTileCoord { u: 0, v: 1 }.udim_id(), Some(1011));
+        assert_eq!(UvTileCoord { u: 9, v: 99 }.udim_id(), None);
+        assert_eq!(split_udim_uv([-0.01, 0.5]), None);
+        assert_eq!(split_udim_uv([f32::NAN, 0.5]), None);
+        assert_eq!(split_udim_uv([10.0, 0.5]), None);
+        assert_eq!(split_udim_uv([0.5, 100.0]), None);
+    }
+
+    #[test]
+    fn tile_coverage_clips_crossing_triangles_and_keeps_legacy_api() {
+        let mut mesh = small_triangle();
+        mesh.vertices[0].uv = [0.75, 0.25];
+        mesh.vertices[1].uv = [1.25, 0.25];
+        mesh.vertices[2].uv = [0.75, 0.75];
+        let legacy = UvCoverage::generate(&mesh, 64).unwrap();
+        let first_tile =
+            UvCoverage::generate_for_tile(&mesh, 64, UvTileCoord { u: 0, v: 0 }).unwrap();
+        let next_tile =
+            UvCoverage::generate_for_tile(&mesh, 64, UvTileCoord { u: 1, v: 0 }).unwrap();
+        assert!(legacy.covered_texels() > 0);
+        assert!(first_tile.covered_texels() > 0);
+        assert!(next_tile.covered_texels() > 0);
+        assert!(first_tile.covered_texels() > next_tile.covered_texels());
+
+        let local_mesh = {
+            let mut local = mesh.clone();
+            for vertex in &mut local.vertices {
+                vertex.uv[0] -= 1.0;
+            }
+            local
+        };
+        assert_eq!(
+            next_tile.to_image().as_raw(),
+            UvCoverage::generate(&local_mesh, 64)
+                .unwrap()
+                .to_image()
+                .as_raw()
+        );
+    }
+
+    #[test]
+    fn tile_coverage_keeps_material_set_filtering_separate() {
+        let mut mesh = Mesh::demo_cube();
+        mesh.materials.push("Second".into());
+        mesh.triangle_materials[0] = 1;
+        let tile = UvTileCoord { u: 0, v: 0 };
+        let full = UvCoverage::generate_for_tile(&mesh, 64, tile).unwrap();
+        let filtered =
+            UvCoverage::generate_for_tile_and_set(&mesh, 64, &[None, Some(2)], 1, tile).unwrap();
+        assert!(filtered.covered_texels() < full.covered_texels());
+        assert!(UvCoverage::generate_for_tile(&mesh, 64, UvTileCoord { u: 10, v: 0 }).is_err());
     }
 
     #[test]
