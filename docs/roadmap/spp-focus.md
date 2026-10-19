@@ -33,6 +33,9 @@ SPP support. No completion claim until the real round-trip evidence exists.
   not specify the full on-disk schema.
 - REA Mac is connected with Ghidra available. A bounded application-name search
   located the installed Painter app. No application source/shaders/assets are
-  copied; fixture generation and format observations are the next work.
+  copied. An original quad fixture now full-saves and reopens editable in Painter.
+  The observed HDF5 container, document declarations and nonstandard mesh version
+  are recorded in [the investigation](../research/spp-roundtrip.md). Semantic
+  import, editable save and incremental round trips remain unimplemented.
 - Native Save now rejects SPP paths before mutation rather than replacing an
   SPP with a mislabeled Kalium archive. This safeguard is not SPP writing.

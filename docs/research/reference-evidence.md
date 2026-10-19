@@ -1,6 +1,6 @@
 # Reference evidence log
 
-Updated 2026-10-19. No REA/Ghidra analysis was needed for the current workflow-safety and mesh-interoperability slices. No proprietary source, assets, shaders, or reverse-engineered material was used.
+Updated 2026-10-19. Workflow-safety and mesh-interoperability changes used local source and public specifications. The subsequent SPP investigation uses an owned synthetic fixture and bounded REA runtime observations; see [SPP investigation](spp-roundtrip.md). No proprietary source, assets or shaders are copied into the repository.
 
 | Date | Claim | Class | Evidence | Use/limit |
 |---|---|---|---|---|
@@ -12,6 +12,6 @@ Updated 2026-10-19. No REA/Ghidra analysis was needed for the current workflow-s
 | 2026-10-19 | glTF vertex tangents are normalized XYZ with W equal to ±1 for tangent-basis handedness; bitangent is `cross(N, T) * W`. | DOCUMENTED | [Khronos glTF 2.0 Specification, vertex attributes](https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/Specification.adoc#vertex-attributes) | Used to define optional imported tangent storage, normal-map frame construction and mirrored-handedness tests; node transform, persistence and renderer behavior are verified locally, but full spec interoperability is not claimed. |
 | 2026-10-19 | Painter's Python export API accepts preset objects with `name` and `maps`; each map describes filename, channel routing and export parameters. | DOCUMENTED | [Adobe Painter Python export API](https://experienceleague.adobe.com/en/docs/substance-3d-dev/painter-python/api/substancepainter-package/export) | Used for a generated PNG export-preset payload and API-compatible channel map. This does not document the `.spexp` on-disk shelf file or `.spp` project format; Painter runtime acceptance remains pending. |
 
-REA evidence: none consulted this session. Existing inventory identifiers in the roadmap are historical context only, not evidence of product behavior.
+REA runtime evidence for the controlled SPP fixture: `ev_e2be826e33200d9e4b873e1c09c1e48feac9eaaaf1c1a5852e8266a909463314`. This establishes Painter save/reopen behavior, not Kalium compatibility. Ghidra is available and the reference target was bound; no decompiled implementation was used.
 
 | 2026-10-19 | RustSec flags `zip 0.6.6` for three extraction-path advisories; Kalium's reader uses bounded named-entry reads, not extraction. | DOCUMENTED + OBSERVED | [RUSTSEC-2026-0367](https://rustsec.org/advisories/RUSTSEC-2026-0367.html), [0368](https://rustsec.org/advisories/RUSTSEC-2026-0368.html), [0369](https://rustsec.org/advisories/RUSTSEC-2026-0369.html); `src/project.rs::read_entry` and `load`; local cargo-audit/tree/source-search output | The crate remains directly depended on and the exception is time-limited; migrate to `zip >=9.0.0` once source/API resolution is available offline/CI. No extraction exploitability is claimed for paths not invoked. `cargo-deny` advisory exceptions include reasons and 30-day expiry. Config semantics checked against [cargo-deny advisory configuration](https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html). |

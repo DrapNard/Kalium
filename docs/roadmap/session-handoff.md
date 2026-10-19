@@ -461,3 +461,19 @@ Fixture 3 now builds a nested Group with black and white masks and a two-channel
 - Connected Mac Painter metadata is **11.1.3**, ARM64 executable SHA-256
   `43c14c7a679c5bde792460dca975a801e8fd2e1978d06a4e2fb0eb987353bf08`.
   This is installed-reference identity, not format compatibility evidence.
+
+## SPP fixture checkpoint
+
+- Added original `scripts/research/painter_spp_fixture.py`; actually ran it on
+  owned Painter 11.1.3, API 0.3.5. Full baseline and copy save; baseline reopens
+  editable with unchanged digest. This is oracle research, not Kalium support.
+- Private corpus: `/tmp/kalium-spp-corpus-fkci5p3l`; remote original directory
+  `/var/folders/6k/y3vsv6l15fv_jxpmjh2kxh9c0000gn/T/kalium-spp-fixture-_6d2k_28`.
+  Never publish its SPPs/resources. See `docs/research/spp-roundtrip.md` for hashes,
+  public contracts, observed HDF5/document metadata and unverified hypotheses.
+- Independent audits confirm the document schema is not decoded and mesh format
+  1.7 differs from upstream ASSBIN 1.0. Do not use stock Assimp as assumed support.
+- Next: controlled semantic differential fixtures, document/hash/mesh contracts,
+  then bounded native import and genuine edit/save verified in Painter.
+- No Rust behavior changes in this checkpoint; previous 614-test gate applies
+  to the published application revision. Python harness has actual runtime evidence.
