@@ -445,3 +445,19 @@ Fixture 3 now builds a nested Group with black and white masks and a two-channel
   found in the bounded local Downloads/Dev search. Next: controlled synthetic
   Painter fixture generation, public API observation and format contract. No
   proprietary sources/shaders/resources or SPP files are to be published.
+
+## Public GitHub publication
+
+- Created **public** `https://github.com/DrapNard/Kalium` with the owner’s explicit
+  direction. Integration commit `2cb60c9c73eff775ca71b97ba41e1ca81e804919`
+  includes the complete pending source/docs/visual work. Main and all ten existing
+  tags were pushed. Remote `github` tracks main; original local bundle `origin`
+  remains intact. `git ls-remote` matched the integration SHA and GitHub reported
+  PUBLIC visibility/default main.
+- Hosted CI run `39278200413` exists; Linux, Windows and macOS jobs are queued,
+  not passed. Local 614-test/lint/GPU-check results remain the verified gates.
+- Current application binary was rebuilt after a package clean; source remains
+  an alpha. SPP import/write remains unsupported despite being the new priority.
+- Connected Mac Painter metadata is **11.1.3**, ARM64 executable SHA-256
+  `43c14c7a679c5bde792460dca975a801e8fd2e1978d06a4e2fb0eb987353bf08`.
+  This is installed-reference identity, not format compatibility evidence.

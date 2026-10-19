@@ -5,6 +5,7 @@ edition = "2021"
 authors = ["DrapNard", "Kalium contributors"]
 license = "AGPL-3.0-only"
 description = "Open-source, artist-first 3D texture painting studio"
+repository = "https://github.com/DrapNard/Kalium"
 
 [features]
 default = []
