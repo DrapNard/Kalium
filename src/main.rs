@@ -4,6 +4,7 @@
 mod activity_log;
 mod app;
 mod bake;
+mod blend;
 mod brush_preset;
 mod cli;
 mod document;

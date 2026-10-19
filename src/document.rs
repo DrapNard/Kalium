@@ -85,10 +85,68 @@ pub enum BlendMode {
     Add,
     /// Reoriented normal-map composition; other PBR channels treat this as Normal.
     Detail,
+    Divide,
+    InverseDivide,
+    Darken,
+    Lighten,
+    Subtract,
+    InverseSubtract,
+    Difference,
+    Exclusion,
+    /// Adds a source centered on 0.5; 0.5 is neutral.
+    SignedAddition,
+    Overlay,
+    Screen,
+    LinearBurn,
+    ColorBurn,
+    ColorDodge,
+    SoftLight,
+    HardLight,
+    VividLight,
+    LinearLight,
+    PinLight,
+    Tint,
+    Saturation,
+    Color,
+    Value,
+    NormalMapCombine,
+    NormalMapDetail,
+    NormalMapInverseDetail,
 }
 
 impl BlendMode {
-    pub const ALL: [Self; 4] = [Self::Normal, Self::Multiply, Self::Add, Self::Detail];
+    pub const ALL: [Self; 30] = [
+        Self::Normal,
+        Self::Multiply,
+        Self::Add,
+        Self::Detail,
+        Self::Divide,
+        Self::InverseDivide,
+        Self::Darken,
+        Self::Lighten,
+        Self::Subtract,
+        Self::InverseSubtract,
+        Self::Difference,
+        Self::Exclusion,
+        Self::SignedAddition,
+        Self::Overlay,
+        Self::Screen,
+        Self::LinearBurn,
+        Self::ColorBurn,
+        Self::ColorDodge,
+        Self::SoftLight,
+        Self::HardLight,
+        Self::VividLight,
+        Self::LinearLight,
+        Self::PinLight,
+        Self::Tint,
+        Self::Saturation,
+        Self::Color,
+        Self::Value,
+        Self::NormalMapCombine,
+        Self::NormalMapDetail,
+        Self::NormalMapInverseDetail,
+    ];
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -96,6 +154,67 @@ impl BlendMode {
             Self::Multiply => "Multiply",
             Self::Add => "Add",
             Self::Detail => "Detail Normal",
+            Self::Divide => "Divide",
+            Self::InverseDivide => "Inverse Divide",
+            Self::Darken => "Darken",
+            Self::Lighten => "Lighten",
+            Self::Subtract => "Subtract",
+            Self::InverseSubtract => "Inverse Subtract",
+            Self::Difference => "Difference",
+            Self::Exclusion => "Exclusion",
+            Self::SignedAddition => "Signed Addition",
+            Self::Overlay => "Overlay",
+            Self::Screen => "Screen",
+            Self::LinearBurn => "Linear Burn",
+            Self::ColorBurn => "Color Burn",
+            Self::ColorDodge => "Color Dodge",
+            Self::SoftLight => "Soft Light",
+            Self::HardLight => "Hard Light",
+            Self::VividLight => "Vivid Light",
+            Self::LinearLight => "Linear Light",
+            Self::PinLight => "Pin Light",
+            Self::Tint => "Tint",
+            Self::Saturation => "Saturation",
+            Self::Color => "Color",
+            Self::Value => "Value",
+            Self::NormalMapCombine => "Normal Map Combine",
+            Self::NormalMapDetail => "Normal Map Detail",
+            Self::NormalMapInverseDetail => "Normal Map Inverse Detail",
+        }
+    }
+
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            Self::Normal => "Norm",
+            Self::Multiply => "Mult",
+            Self::Add => "Add",
+            Self::Detail => "Detail",
+            Self::Divide => "Div",
+            Self::InverseDivide => "IDiv",
+            Self::Darken => "Dark",
+            Self::Lighten => "Light",
+            Self::Subtract => "Sub",
+            Self::InverseSubtract => "ISub",
+            Self::Difference => "Diff",
+            Self::Exclusion => "Excl",
+            Self::SignedAddition => "AddSub",
+            Self::Overlay => "Ovrly",
+            Self::Screen => "Scrn",
+            Self::LinearBurn => "LBurn",
+            Self::ColorBurn => "CBurn",
+            Self::ColorDodge => "CDodge",
+            Self::SoftLight => "Soft",
+            Self::HardLight => "Hard",
+            Self::VividLight => "Vivid",
+            Self::LinearLight => "LLight",
+            Self::PinLight => "Pin",
+            Self::Tint => "Tint",
+            Self::Saturation => "Sat",
+            Self::Color => "Color",
+            Self::Value => "Value",
+            Self::NormalMapCombine => "NComb",
+            Self::NormalMapDetail => "NDet",
+            Self::NormalMapInverseDetail => "NIDet",
         }
     }
 }
@@ -860,40 +979,21 @@ fn composite_layers_region(
                 }
                 match channel {
                     Channel::BaseColor | Channel::Emissive => {
+                        let source = std::array::from_fn(|c| srgb_to_linear(s[c] as f32 / 255.0));
+                        let destination =
+                            std::array::from_fn(|c| srgb_to_linear(dst_pixel[c] as f32 / 255.0));
+                        let blended = crate::blend::blend_rgb(layer.blend, destination, source);
                         for c in 0..3 {
-                            let source = srgb_to_linear(s[c] as f32 / 255.0);
-                            let destination = srgb_to_linear(dst_pixel[c] as f32 / 255.0);
-                            let blended = match layer.blend {
-                                BlendMode::Normal => source,
-                                BlendMode::Multiply => destination * source,
-                                BlendMode::Add => (destination + source).min(1.0),
-                                BlendMode::Detail => source,
-                            };
-                            let linear = destination + (blended - destination) * a;
+                            let value = destination[c] + (blended[c] - destination[c]) * a;
                             dst_pixel[c] =
-                                (linear_to_srgb(linear) * 255.0).round().clamp(0.0, 255.0) as u8;
+                                (linear_to_srgb(value) * 255.0).round().clamp(0.0, 255.0) as u8;
                         }
                     }
                     Channel::Normal => {
-                        let destination = decode_normal(&dst_pixel[..3]);
-                        let source = decode_normal(&s[..3]);
-                        let blended = if layer.blend == BlendMode::Detail {
-                            // Detail maps are weighted against the neutral tangent-space
-                            // normal before reorientation, so opacity/mask zero is identity.
-                            let weighted_detail = normalize3([
-                                source[0] * a,
-                                source[1] * a,
-                                1.0 + (source[2] - 1.0) * a,
-                            ]);
-                            reoriented_normal(destination, weighted_detail)
-                        } else {
-                            // Other layer modes retain weighted orientation interpolation.
-                            normalize3([
-                                destination[0] * (1.0 - a) + source[0] * a,
-                                destination[1] * (1.0 - a) + source[1] * a,
-                                destination[2] * (1.0 - a) + source[2] * a,
-                            ])
-                        };
+                        let destination = std::array::from_fn(|c| dst_pixel[c] as f32 / 255.0);
+                        let source = std::array::from_fn(|c| s[c] as f32 / 255.0);
+                        let blended =
+                            crate::blend::blend_normal(layer.blend, destination, source, a, 1.0);
                         for c in 0..3 {
                             dst_pixel[c] =
                                 ((blended[c] * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8;
@@ -901,17 +1001,15 @@ fn composite_layers_region(
                     }
                     _ => {
                         for c in 0..3 {
-                            let source = s[c] as f32;
-                            let destination = dst_pixel[c] as f32;
-                            let blended = match layer.blend {
-                                BlendMode::Normal => source,
-                                BlendMode::Multiply => destination * source / 255.0,
-                                BlendMode::Add => (destination + source).min(255.0),
-                                BlendMode::Detail => source,
-                            };
-                            dst_pixel[c] = (destination + (blended - destination) * a)
-                                .round()
-                                .clamp(0.0, 255.0) as u8;
+                            let source_value = s[c] as f32 / 255.0;
+                            let destination_value = dst_pixel[c] as f32 / 255.0;
+                            let blended = crate::blend::blend_rgb(
+                                layer.blend,
+                                [destination_value; 3],
+                                [source_value; 3],
+                            )[0];
+                            let value = destination_value + (blended - destination_value) * a;
+                            dst_pixel[c] = (value * 255.0).round().clamp(0.0, 255.0) as u8;
                         }
                     }
                 }
@@ -960,6 +1058,7 @@ pub(crate) fn normalize3(vector: [f32; 3]) -> [f32; 3] {
 
 /// Reoriented normal mapping (RNM), with `base` as the accumulated surface
 /// orientation and `detail` in the tangent frame of the neutral surface.
+#[cfg(test)]
 pub(crate) fn reoriented_normal(base: [f32; 3], detail: [f32; 3]) -> [f32; 3] {
     let t = [base[0], base[1], base[2] + 1.0];
     let u = [-detail[0], -detail[1], detail[2]];
@@ -974,6 +1073,25 @@ pub(crate) fn reoriented_normal(base: [f32; 3], detail: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_blend_mode_serialization_names_are_unchanged() {
+        assert_eq!(
+            serde_json::to_string(&BlendMode::Normal).unwrap(),
+            "\"Normal\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BlendMode::Multiply).unwrap(),
+            "\"Multiply\""
+        );
+        assert_eq!(serde_json::to_string(&BlendMode::Add).unwrap(), "\"Add\"");
+        assert_eq!(
+            serde_json::to_string(&BlendMode::Detail).unwrap(),
+            "\"Detail\""
+        );
+        assert_eq!(BlendMode::ALL.len(), 30);
+    }
+
     #[test]
     fn channel_allocation_budget_accepts_exact_limit_and_rejects_overflow() {
         assert!(decoded_allocation_fits_budget(MAX_DECODED_BYTES - 64, 64));
@@ -1281,6 +1399,41 @@ mod tests {
         assert_eq!(pixel[1], 128);
         assert_eq!(pixel[2], 128);
         assert_eq!(pixel[3], 255);
+    }
+
+    #[test]
+    fn expanded_blends_use_linear_color_and_normalized_data_values() {
+        let mut color_under = Layer::new(1, "Color backdrop", 64);
+        color_under
+            .pixels_mut(Channel::BaseColor, 64)
+            .put_pixel(0, 0, Rgba([128, 128, 128, 255]));
+        let mut color_top = Layer::new(2, "Color screen", 64);
+        color_top.blend = BlendMode::Screen;
+        color_top
+            .pixels_mut(Channel::BaseColor, 64)
+            .put_pixel(0, 0, Rgba([128, 128, 128, 255]));
+        let color = composite_layers(&[color_under, color_top], 64, Channel::BaseColor)
+            .get_pixel(0, 0)
+            .0;
+        let linear = srgb_to_linear(128.0 / 255.0);
+        let expected_color =
+            (linear_to_srgb(linear + linear - linear * linear) * 255.0).round() as u8;
+        assert_eq!(color, [expected_color, expected_color, expected_color, 255]);
+
+        let mut data_under = Layer::new(3, "Data backdrop", 64);
+        data_under
+            .pixels_mut(Channel::Roughness, 64)
+            .put_pixel(0, 0, Rgba([128, 128, 128, 255]));
+        let mut data_top = Layer::new(4, "Data divide", 64);
+        data_top.blend = BlendMode::Divide;
+        data_top
+            .pixels_mut(Channel::Roughness, 64)
+            .put_pixel(0, 0, Rgba([64, 64, 64, 255]));
+        let data = composite_layers(&[data_under, data_top], 64, Channel::Roughness)
+            .get_pixel(0, 0)
+            .0;
+        let expected_data = ((128.0_f32 / 255.0) / (64.0 / 255.0) * 255.0).round() as u8;
+        assert_eq!(data, [expected_data, expected_data, expected_data, 255]);
     }
 
     #[test]

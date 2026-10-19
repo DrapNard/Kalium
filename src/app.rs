@@ -1684,9 +1684,7 @@ impl KaliumApp {
             return;
         }
         if self.paint_dirty || self.material.is_none() {
-            if channel == Channel::BaseColor {
-                self.gpu_scene_dirty = true;
-            }
+            self.gpu_scene_dirty = true;
             self.invalidate_paint_caches();
             return;
         }
@@ -1743,22 +1741,25 @@ impl KaliumApp {
                     self.invalidate_paint_caches();
                     return;
                 }
-                if affected_channel == channel {
-                    if channel == Channel::BaseColor && !self.gpu_scene_dirty {
-                        if let Some(gpu_viewport) = self.gpu_viewport.as_mut() {
-                            match gpu_viewport.update_base_color_regions(set_id, &[(x, y, &region)])
-                            {
-                                Ok(true) => {}
-                                Ok(false) => self.gpu_scene_dirty = true,
-                                Err(error) => {
-                                    self.gpu_scene_dirty = true;
-                                    self.status = format!(
-                                        "GPU Base Color update deferred to full refresh: {error:#}"
-                                    );
-                                }
+                if !self.gpu_scene_dirty {
+                    if let Some(gpu_viewport) = self.gpu_viewport.as_mut() {
+                        match gpu_viewport.update_channel_regions(
+                            set_id,
+                            affected_channel,
+                            &[(x, y, &region)],
+                        ) {
+                            Ok(true) => {}
+                            Ok(false) => self.gpu_scene_dirty = true,
+                            Err(error) => {
+                                self.gpu_scene_dirty = true;
+                                self.status = format!(
+                                    "GPU channel update deferred to full refresh: {error:#}"
+                                );
                             }
                         }
                     }
+                }
+                if affected_channel == channel {
                     uv_region = Some(region);
                 }
             }
@@ -4561,7 +4562,7 @@ impl KaliumApp {
                         ui.close_menu();
                     }
                     ui.checkbox(&mut self.gpu_preview_enabled, "Experimental GPU preview");
-                    ui.label("GPU preview: Base Color with diffuse lighting");
+                    ui.label("GPU PBR: eight channels, studio lighting, opacity cutout");
                 });
                 ui.menu_button("Layer", |ui| {
                     if ui.button("Add paint layer").clicked() {
@@ -5807,12 +5808,7 @@ impl KaliumApp {
                                 "Fill" => "fill",
                                 _ => "group",
                             };
-                            let blend = match blend {
-                                crate::document::BlendMode::Normal => "Norm",
-                                crate::document::BlendMode::Multiply => "Mult",
-                                crate::document::BlendMode::Add => "Add",
-                                crate::document::BlendMode::Detail => "Detail",
-                            };
+                            let blend = blend.short_label();
                             let row_meta = format!("{blend}\n{:.0}", opacity * 100.0);
                             let thumbnail_color = thumbnail_color.filter(|_| channels);
                             (

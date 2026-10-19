@@ -37,6 +37,8 @@ pub fn run(args: &[String]) -> Result<()> {
         kalium bake-mesh-maps <project.kalium> <output-directory> [texture-set-id]\n\
         kalium bake-material-id <project.kalium> <output.png> [texture-set-id]\n\
         kalium bake-ao <project.kalium> <output.png> [texture-set-id] [samples] [max-distance] [seed]\n\
+        kalium bake-curvature <project.kalium> <output.png> [texture-set-id] [samples] [radius] [seed]\n\
+        kalium bake-thickness <project.kalium> <output.png> [texture-set-id] [samples] [max-distance] [seed]\n\
         kalium bake-high-to-low <low-project.kalium> <high-mesh.obj|gltf|glb> <output-directory> [texture-set-id] [max-distance] [high-transform.json]\n\
           With a transform, it maps source high-mesh coordinates to low-project coordinates. Otherwise imported high-mesh coordinates are used directly.\n\
           The JSON transform is 16 column-major affine numbers; transformed coordinates are capped at 1,000,000 units.\n\
@@ -368,6 +370,40 @@ pub fn run(args: &[String]) -> Result<()> {
             });
             bake::write_high_to_low_outputs(&maps, &metadata, output_dir)?;
             println!("Projected high-mesh world normals onto Texture Set {set_id} ({} × {}, {} covered texels) to {}", size, size, maps.covered_texels(), output_dir.display());
+        }
+        "bake-curvature" | "bake-thickness" => {
+            let doc = project::load(Path::new(arg(1)?))?;
+            let (set_id, samples, distance, seed) = parse_ao_args(args, doc.active_set_id)?;
+            let size = doc
+                .texture_set_list()
+                .into_iter()
+                .find(|(id, _, _, _)| *id == set_id)
+                .map(|(_, _, size, _)| size)
+                .ok_or_else(|| anyhow!("Unknown Texture Set ID {set_id}"))?;
+            let options = bake::SurfaceMapBakeOptions {
+                size,
+                bindings: &doc.material_bindings,
+                active_set_id: set_id,
+                max_ray_distance: distance,
+                curvature_radius: distance,
+                sample_count: samples,
+                seed,
+                working_budget_bytes: MAX_DECODED_BYTES.saturating_sub(doc.decoded_bytes()),
+            };
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let image = if arg(0)? == "bake-curvature" {
+                bake::bake_curvature(&doc.mesh, options, &cancel)?
+            } else {
+                bake::bake_thickness(&doc.mesh, options, &cancel)?
+            };
+            image.save(arg(2)?)?;
+            println!(
+                "Baked {} for Texture Set {set_id} ({} × {}) to {}",
+                arg(0)?.trim_start_matches("bake-"),
+                size,
+                size,
+                arg(2)?
+            );
         }
         "bake-ao" => {
             if args.len() < 3 || args.len() > 7 {
@@ -1353,6 +1389,55 @@ mod tests {
         assert_eq!(std::fs::read(&project_path).unwrap(), original_project);
         std::fs::remove_file(output_path).unwrap();
         std::fs::remove_file(sidecar_path).unwrap();
+    }
+
+    #[test]
+    fn integrated_surface_bake_commands_preserve_project_and_match_primitives() {
+        let root =
+            std::env::temp_dir().join(format!("kalium-combined-bakes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let doc = crate::document::Document::new(64);
+        let project_path = root.join("source.kalium");
+        project::save(&doc, &project_path).unwrap();
+        let original = std::fs::read(&project_path).unwrap();
+        for command in ["bake-curvature", "bake-thickness"] {
+            let output = root.join(format!("{command}.png"));
+            let args = vec![
+                command.into(),
+                project_path.display().to_string(),
+                output.display().to_string(),
+                doc.active_set_id.to_string(),
+                "2".into(),
+                "0.2".into(),
+                "42".into(),
+            ];
+            run(&args).unwrap();
+            let options = bake::SurfaceMapBakeOptions {
+                size: 64,
+                bindings: &doc.material_bindings,
+                active_set_id: doc.active_set_id,
+                sample_count: 2,
+                seed: 42,
+                max_ray_distance: 0.2,
+                curvature_radius: 0.2,
+                working_budget_bytes: MAX_DECODED_BYTES,
+            };
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let expected = if command == "bake-curvature" {
+                bake::bake_curvature(&doc.mesh, options, &cancel).unwrap()
+            } else {
+                bake::bake_thickness(&doc.mesh, options, &cancel).unwrap()
+            };
+            assert_eq!(image::open(output).unwrap().to_rgba8(), expected);
+            assert_eq!(std::fs::read(&project_path).unwrap(), original);
+            let mut invalid = args.clone();
+            invalid[3] = u32::MAX.to_string();
+            assert!(run(&invalid).is_err());
+            invalid = args;
+            invalid[5] = "NaN".into();
+            assert!(run(&invalid).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

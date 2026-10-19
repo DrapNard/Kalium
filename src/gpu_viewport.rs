@@ -118,8 +118,8 @@ struct GpuTarget {
 
 struct GpuDrawGroup {
     texture_set_id: u32,
-    base_color_size: [u32; 2],
-    _base_color: wgpu::Texture,
+    channel_size: [u32; 2],
+    textures: Vec<wgpu::Texture>,
     bind_group: wgpu::BindGroup,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -132,11 +132,11 @@ impl GpuViewport {
             label: Some("kalium_gpu_camera_layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(64),
+                    min_binding_size: wgpu::BufferSize::new(80),
                 },
                 count: None,
             }],
@@ -144,24 +144,23 @@ impl GpuViewport {
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("kalium_gpu_base_color_layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
+                entries: &std::iter::once(wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                })
+                .chain((1..=8).map(|binding| wgpu::BindGroupLayoutEntry {
+                    binding,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
+                    count: None,
+                }))
+                .collect::<Vec<_>>(),
             });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("kalium_gpu_viewport_pipeline_layout"),
@@ -220,7 +219,7 @@ impl GpuViewport {
         });
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("kalium_gpu_viewport_camera"),
-            size: 64,
+            size: 80,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -357,65 +356,98 @@ impl GpuViewport {
         let mut uploaded_bytes = vertex_bytes.len();
         let mut draw_groups = Vec::with_capacity(prepared.groups.len());
         for group in prepared.groups {
-            let image = doc
-                .composite_for_set(group.texture_set_id, Channel::BaseColor)
-                .ok_or_else(|| {
-                    anyhow!("Texture Set {} has no Base Color map", group.texture_set_id)
-                })?;
-            uploaded_bytes = uploaded_bytes
-                .checked_add(image.as_raw().len())
-                .context("GPU scene byte count overflow")?;
-            ensure!(
-                uploaded_bytes <= MAX_GPU_SCENE_BYTES,
-                "GPU preview textures exceed memory cap"
+            let mut textures = Vec::with_capacity(PREVIEW_CHANNELS.len());
+            let mut channel_size = [0, 0];
+            for channel in PREVIEW_CHANNELS {
+                let image = doc
+                    .composite_for_set(group.texture_set_id, channel)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Texture Set {} has no {} map",
+                            group.texture_set_id,
+                            channel.label()
+                        )
+                    })?;
+                ensure!(
+                    image.width() > 0 && image.height() > 0,
+                    "GPU material texture is empty"
+                );
+                ensure!(
+                    image.width() <= device.limits().max_texture_dimension_2d
+                        && image.height() <= device.limits().max_texture_dimension_2d,
+                    "GPU material texture exceeds device dimensions"
+                );
+                let size = [image.width(), image.height()];
+                if textures.is_empty() {
+                    channel_size = size;
+                }
+                ensure!(
+                    size == channel_size,
+                    "GPU material channels have inconsistent dimensions"
+                );
+                uploaded_bytes = uploaded_bytes
+                    .checked_add(image.as_raw().len())
+                    .context("GPU scene byte count overflow")?;
+                ensure!(
+                    uploaded_bytes <= MAX_GPU_SCENE_BYTES,
+                    "GPU preview textures exceed memory cap"
+                );
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("kalium_gpu_material_channel"),
+                    size: wgpu::Extent3d {
+                        width: size[0],
+                        height: size[1],
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: channel_texture_format(channel),
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                self.render_state.queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    image.as_raw(),
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(size[0] * 4),
+                        rows_per_image: Some(size[1]),
+                    },
+                    wgpu::Extent3d {
+                        width: size[0],
+                        height: size[1],
+                        depth_or_array_layers: 1,
+                    },
+                );
+                textures.push(texture);
+            }
+            let views = textures
+                .iter()
+                .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()))
+                .collect::<Vec<_>>();
+            let mut entries = vec![wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            }];
+            entries.extend(
+                views
+                    .iter()
+                    .enumerate()
+                    .map(|(index, view)| wgpu::BindGroupEntry {
+                        binding: index as u32 + 1,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    }),
             );
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("kalium_gpu_viewport_base_color"),
-                size: wgpu::Extent3d {
-                    width: image.width(),
-                    height: image.height(),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            self.render_state.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                image.as_raw(),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(image.width() * 4),
-                    rows_per_image: Some(image.height()),
-                },
-                wgpu::Extent3d {
-                    width: image.width(),
-                    height: image.height(),
-                    depth_or_array_layers: 1,
-                },
-            );
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("kalium_gpu_viewport_base_color_bind_group"),
+                label: Some("kalium_gpu_material_bind_group"),
                 layout: &self.texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                ],
+                entries: &entries,
             });
             let index_bytes = u32_bytes(&group.indices);
             uploaded_bytes = uploaded_bytes
@@ -438,8 +470,8 @@ impl GpuViewport {
             }
             draw_groups.push(GpuDrawGroup {
                 texture_set_id: group.texture_set_id,
-                base_color_size: [image.width(), image.height()],
-                _base_color: texture,
+                channel_size,
+                textures,
                 bind_group,
                 index_buffer,
                 index_count: group.indices.len() as u32,
@@ -451,18 +483,18 @@ impl GpuViewport {
         Ok(())
     }
 
-    /// Update already-composited Base Color regions on every resident draw
-    /// group bound to `texture_set_id`. Returns `false` if that set is not
-    /// resident. All region bounds and byte counts are checked before the
-    /// first queue write, so an invalid batch cannot partially update the GPU.
-    ///
-    /// The region list is deliberately bounded to 1024 entries and 16 MiB of
-    /// source RGBA data per call. Empty batches are rejected.
-    pub fn update_base_color_regions(
+    /// Upload a composited region for any preview channel. Validation completes
+    /// before writes, with the same bounds as Base Color updates.
+    pub fn update_channel_regions(
         &mut self,
         texture_set_id: u32,
+        channel: Channel,
         regions: &[(u32, u32, &RgbaImage)],
     ) -> Result<bool> {
+        let channel_index = PREVIEW_CHANNELS
+            .iter()
+            .position(|candidate| *candidate == channel)
+            .context("unsupported GPU preview channel")?;
         if !contains_texture_set(
             self.draw_groups.iter().map(|group| group.texture_set_id),
             texture_set_id,
@@ -474,7 +506,7 @@ impl GpuViewport {
             .iter()
             .enumerate()
             .filter(|(_, group)| group.texture_set_id == texture_set_id)
-            .map(|(index, group)| (index, group.base_color_size))
+            .map(|(index, group)| (index, group.channel_size))
             .collect::<Vec<_>>();
         if matching_groups.is_empty() {
             return Ok(false);
@@ -486,11 +518,11 @@ impl GpuViewport {
             matching_groups
                 .iter()
                 .all(|(_, size)| *size == primary_size),
-            "resident draw groups for a Texture Set have inconsistent Base Color dimensions"
+            "resident draw groups for a Texture Set have inconsistent material channel dimensions"
         );
 
         for (group_index, _) in matching_groups {
-            let texture = &self.draw_groups[group_index]._base_color;
+            let texture = &self.draw_groups[group_index].textures[channel_index];
             for (region, validated_region) in regions.iter().zip(&validated) {
                 self.render_state.queue.write_texture(
                     wgpu::TexelCopyTextureInfo {
@@ -526,11 +558,11 @@ impl GpuViewport {
         }
         let aspect = self.target.size[0] as f32 / self.target.size[1] as f32;
         let matrix = camera_matrix(yaw, pitch, distance, aspect);
-        self.render_state.queue.write_buffer(
-            &self.camera_buffer,
-            0,
-            &f32_bytes(&matrix.to_cols_array()),
-        );
+        let mut uniforms = matrix.to_cols_array().to_vec();
+        uniforms.extend_from_slice(&camera_eye(yaw, pitch, distance).extend(1.0).to_array());
+        self.render_state
+            .queue
+            .write_buffer(&self.camera_buffer, 0, &f32_bytes(&uniforms));
         let mut encoder =
             self.render_state
                 .device
@@ -583,7 +615,25 @@ impl GpuViewport {
     }
 }
 
-fn camera_matrix(yaw: f32, pitch: f32, distance: f32, aspect: f32) -> Mat4 {
+// Binding order matches viewport.wgsl; data maps must never be sRGB decoded.
+const PREVIEW_CHANNELS: [Channel; 8] = [
+    Channel::BaseColor,
+    Channel::Roughness,
+    Channel::Metallic,
+    Channel::Normal,
+    Channel::Emissive,
+    Channel::Height,
+    Channel::Occlusion,
+    Channel::Opacity,
+];
+fn channel_texture_format(channel: Channel) -> wgpu::TextureFormat {
+    match channel {
+        Channel::BaseColor | Channel::Emissive => wgpu::TextureFormat::Rgba8UnormSrgb,
+        _ => wgpu::TextureFormat::Rgba8Unorm,
+    }
+}
+
+fn camera_eye(yaw: f32, pitch: f32, distance: f32) -> Vec3 {
     let yaw = if yaw.is_finite() { yaw } else { 0.42 };
     let pitch = if pitch.is_finite() {
         pitch.clamp(-1.45, 1.45)
@@ -595,16 +645,20 @@ fn camera_matrix(yaw: f32, pitch: f32, distance: f32, aspect: f32) -> Mat4 {
     } else {
         5.4
     };
+    Vec3::new(
+        distance * yaw.sin() * pitch.cos(),
+        distance * pitch.sin(),
+        distance * yaw.cos() * pitch.cos(),
+    )
+}
+
+fn camera_matrix(yaw: f32, pitch: f32, distance: f32, aspect: f32) -> Mat4 {
     let aspect = if aspect.is_finite() {
         aspect.clamp(0.1, 10.0)
     } else {
         1.0
     };
-    let eye = Vec3::new(
-        distance * yaw.sin() * pitch.cos(),
-        distance * pitch.sin(),
-        distance * yaw.cos() * pitch.cos(),
-    );
+    let eye = camera_eye(yaw, pitch, distance);
     let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
     let vertical_fov = 2.0 * (1.0 / 2.16f32).atan();
     Mat4::perspective_rh(vertical_fov, aspect, 0.05, 100.0) * view
@@ -713,6 +767,61 @@ mod tests {
         )
         .validate(&module)
         .expect("viewport WGSL should validate");
+    }
+
+    #[test]
+    fn preview_channels_cover_every_editable_map_with_correct_color_space() {
+        assert_eq!(PREVIEW_CHANNELS.len(), Channel::ALL.len());
+        for channel in Channel::ALL {
+            assert_eq!(
+                PREVIEW_CHANNELS
+                    .iter()
+                    .filter(|entry| **entry == channel)
+                    .count(),
+                1
+            );
+            let expected = if matches!(channel, Channel::BaseColor | Channel::Emissive) {
+                wgpu::TextureFormat::Rgba8UnormSrgb
+            } else {
+                wgpu::TextureFormat::Rgba8Unorm
+            };
+            assert_eq!(channel_texture_format(channel), expected);
+        }
+    }
+
+    #[test]
+    fn shader_bindings_match_all_material_upload_slots_and_camera_size() {
+        let source = include_str!("../assets/shaders/viewport.wgsl");
+        let module = naga::front::wgsl::parse_str(source).unwrap();
+        let mut material_bindings = module
+            .global_variables
+            .iter()
+            .filter_map(|(_, value)| {
+                value
+                    .binding
+                    .as_ref()
+                    .filter(|binding| binding.group == 1)
+                    .map(|binding| binding.binding)
+            })
+            .collect::<Vec<_>>();
+        material_bindings.sort_unstable();
+        assert_eq!(material_bindings, (0..=8).collect::<Vec<_>>());
+        let camera = module
+            .global_variables
+            .iter()
+            .find(|(_, variable)| {
+                variable
+                    .binding
+                    .as_ref()
+                    .is_some_and(|binding| binding.group == 0 && binding.binding == 0)
+            })
+            .unwrap()
+            .1;
+        match &module.types[camera.ty].inner {
+            naga::TypeInner::Struct { span, .. } => assert_eq!(*span, 80),
+            _ => panic!("camera uniform must remain a struct"),
+        }
+        assert!(camera_eye(f32::NAN, f32::INFINITY, -1.0).is_finite());
     }
 
     #[test]

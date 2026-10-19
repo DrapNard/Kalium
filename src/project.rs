@@ -4073,6 +4073,42 @@ mod tests {
     }
 
     #[test]
+    fn integrated_blend_modes_roundtrip_without_changing_composite() {
+        for blend in BlendMode::ALL {
+            let mut doc = Document::new(64);
+            for channel in Channel::ALL {
+                for pixel in doc
+                    .layer_tree
+                    .paint_layer_mut(1)
+                    .unwrap()
+                    .pixels_mut(channel, 64)
+                    .pixels_mut()
+                {
+                    *pixel = Rgba([80, 130, 210, 255]);
+                }
+            }
+            doc.add_layer().unwrap();
+            let layer = doc.selected_paint_layer_mut().unwrap();
+            layer.blend = blend;
+            layer.opacity = 0.625;
+            for channel in Channel::ALL {
+                for pixel in layer.pixels_mut(channel, 64).pixels_mut() {
+                    *pixel = Rgba([190, 95, 150, 192]);
+                }
+            }
+            let before = Channel::ALL.map(|channel| doc.composite(channel));
+            let target = path("subcraft-blend-roundtrip");
+            let _cleanup = Cleanup(vec![target.clone()]);
+            save(&doc, &target).unwrap();
+            let loaded = load(&target).unwrap();
+            assert_eq!(loaded.selected_paint_layer().unwrap().blend, blend);
+            for (channel, expected) in Channel::ALL.into_iter().zip(before) {
+                assert_eq!(loaded.composite(channel), expected, "{blend:?} {channel:?}");
+            }
+        }
+    }
+
+    #[test]
     fn detail_normal_blend_roundtrips_in_v9_manifest() {
         let mut doc = Document::new(64);
         doc.layer_tree.paint_layer_mut(1).unwrap().blend = BlendMode::Detail;

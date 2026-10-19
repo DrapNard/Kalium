@@ -433,6 +433,21 @@ pub struct AmbientOcclusionBakeOptions<'a> {
     pub working_budget_bytes: u64,
 }
 
+/// Shared options for SubCraft-derived curvature and thickness mesh maps.
+/// Distances are in imported mesh units. Material bindings filter destination
+/// texels only; the whole mesh supplies neighborhood geometry and ray hits.
+#[derive(Clone, Copy)]
+pub struct SurfaceMapBakeOptions<'a> {
+    pub size: u32,
+    pub bindings: &'a [Option<u32>],
+    pub active_set_id: u32,
+    pub max_ray_distance: f32,
+    pub curvature_radius: f32,
+    pub sample_count: u32,
+    pub seed: u64,
+    pub working_budget_bytes: u64,
+}
+
 /// Owned settings for a background ambient-occlusion bake.
 ///
 /// The worker owns these settings and its mesh snapshot, so it never needs a
@@ -1168,6 +1183,276 @@ fn bake_ambient_occlusion_with_progress(
     })
 }
 
+// Curvature neighborhood estimator and thickness convention adapted from
+// SubCraft 71e49fde7e4e1dba188a6589c9e5a139d1e3d9d5, crates/bake/src/{curvature,lib}.rs.
+// Copyright (c) Aalzard and the SubCraft contributors. Used under MIT;
+// see THIRD_PARTY_NOTICES.md. Traversal, bounds, cancellation and image output
+// use Kalium's existing baker. No bundled SubCraft artwork is required.
+
+/// Bake seam-independent 3D-neighborhood curvature: black is concave,
+/// middle gray is flat, white is convex. Uncovered texels are transparent.
+pub fn bake_curvature(
+    mesh: &Mesh,
+    options: SurfaceMapBakeOptions<'_>,
+    cancel: &AtomicBool,
+) -> Result<RgbaImage> {
+    bake_surface_map(mesh, options, cancel, true)
+}
+
+/// Bake cosine-weighted inward ray thickness. White means thin, black means
+/// no opposite surface within `max_ray_distance`. This is a local geometric
+/// estimate, not a watertight-solid volume measurement.
+pub fn bake_thickness(
+    mesh: &Mesh,
+    options: SurfaceMapBakeOptions<'_>,
+    cancel: &AtomicBool,
+) -> Result<RgbaImage> {
+    bake_surface_map(mesh, options, cancel, false)
+}
+
+fn bake_surface_map(
+    mesh: &Mesh,
+    options: SurfaceMapBakeOptions<'_>,
+    cancel: &AtomicBool,
+    curvature: bool,
+) -> Result<RgbaImage> {
+    mesh.validate()?;
+    if !(64..=MAX_BAKE_SIZE).contains(&options.size) {
+        bail!("Surface-map dimension must be between 64 and {MAX_BAKE_SIZE}");
+    }
+    if curvature {
+        if !options.curvature_radius.is_finite() || options.curvature_radius <= 0.0 {
+            bail!("Curvature radius must be finite and positive");
+        }
+    } else if !options.max_ray_distance.is_finite() || options.max_ray_distance <= 0.0 {
+        bail!("Thickness ray distance must be finite and positive");
+    }
+    let texels = u64::from(options.size) * u64::from(options.size);
+    if !curvature
+        && (options.sample_count == 0
+            || options.sample_count > MAX_AO_SAMPLES_PER_TEXEL
+            || texels * u64::from(options.sample_count) > MAX_AO_RAYS)
+    {
+        bail!("Thickness sample count exceeds the CPU ray-count budget");
+    }
+    let triangles = mesh.indices.len() / 3;
+    let nodes = triangles
+        .checked_mul(2)
+        .and_then(|v| v.checked_sub(1))
+        .context("Surface-map BVH node count overflow")?;
+    let bvh_bytes = (triangles as u64)
+        .checked_mul((std::mem::size_of::<SourceTriangle>() + std::mem::size_of::<usize>()) as u64)
+        .and_then(|v| {
+            v.checked_add((nodes as u64).checked_mul(std::mem::size_of::<BvhNode>() as u64)?)
+        })
+        .and_then(|v| v.checked_add(64 * std::mem::size_of::<usize>() as u64))
+        .context("Surface-map memory budget overflow")?;
+    if (texels * 33)
+        .checked_add(bvh_bytes)
+        .is_none_or(|v| v > options.working_budget_bytes)
+    {
+        bail!("Surface-map bake exceeds transient-memory budget");
+    }
+    let maps = bake_mesh_maps_budgeted(
+        mesh,
+        options.size,
+        options.bindings,
+        options.active_set_id,
+        options.working_budget_bytes - bvh_bytes - texels * 4,
+        cancel,
+    )?;
+    let bvh = TriangleBvh::build(mesh, cancel)?;
+    let mut stack = Vec::new();
+    stack
+        .try_reserve_exact(64)
+        .context("Could not reserve surface-map traversal stack")?;
+    let pixels = reserve_filled((texels * 4) as usize, 0_u8)?;
+    let mut image = RgbaImage::from_raw(options.size, options.size, pixels)
+        .context("Could not allocate surface-map image")?;
+    // Global traversal cap additionally bounds dense curvature neighborhoods.
+    let mut visits = 0_u64;
+    for (index, pixel) in image.pixels_mut().enumerate() {
+        if index.is_multiple_of(64) && cancel.load(Ordering::Relaxed) {
+            bail!("Surface-map bake canceled");
+        }
+        if maps.valid[index] == 0 {
+            continue;
+        }
+        let p = DVec3::from_array(maps.positions[index].map(f64::from));
+        let Some(n) = DVec3::from_array(maps.world_normals[index].map(f64::from)).try_normalize()
+        else {
+            continue;
+        };
+        let value = if curvature {
+            neighborhood_curvature(
+                mesh,
+                &bvh,
+                p,
+                n,
+                f64::from(options.curvature_radius),
+                &mut stack,
+                &mut visits,
+                cancel,
+            )?
+        } else {
+            let (tangent, bitangent) = tangent_frame(-n);
+            let mut random = SplitMix64::new(texel_seed(options.seed, index as u64));
+            let maximum = f64::from(options.max_ray_distance);
+            let mut total = 0.0;
+            for sample in 0..options.sample_count {
+                if sample.is_multiple_of(64) && cancel.load(Ordering::Relaxed) {
+                    bail!("Thickness bake canceled");
+                }
+                let radius = random.unit_f64().sqrt();
+                let angle = std::f64::consts::TAU * random.unit_f64();
+                let direction = tangent * (radius * angle.cos())
+                    + bitangent * (radius * angle.sin())
+                    - n * (1.0 - radius * radius).sqrt();
+                total += bvh
+                    .nearest_hit(
+                        mesh,
+                        p - n * RAY_ORIGIN_BIAS,
+                        direction,
+                        maximum,
+                        &mut stack,
+                    )
+                    .map_or(maximum, |hit| (hit.distance + RAY_ORIGIN_BIAS).min(maximum));
+            }
+            1.0 - total / (f64::from(options.sample_count) * maximum)
+        };
+        let encoded = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        *pixel = Rgba([encoded, encoded, encoded, 255]);
+    }
+    Ok(image)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn neighborhood_curvature(
+    mesh: &Mesh,
+    bvh: &TriangleBvh,
+    p: DVec3,
+    n: DVec3,
+    radius: f64,
+    stack: &mut Vec<usize>,
+    visits: &mut u64,
+    cancel: &AtomicBool,
+) -> Result<f64> {
+    stack.clear();
+    stack.push(0);
+    let (mut sum, mut weight, mut nearest) = (0.0, 0.0, 0.0_f64);
+    while let Some(node_index) = stack.pop() {
+        *visits += 1;
+        if *visits > MAX_AO_RAYS {
+            bail!("Curvature neighborhood exceeds CPU traversal budget");
+        }
+        if visits.is_multiple_of(256) && cancel.load(Ordering::Relaxed) {
+            bail!("Curvature bake canceled");
+        }
+        let node = &bvh.nodes[node_index];
+        let closest = p.clamp(node.bounds.min, node.bounds.max);
+        if closest.distance_squared(p) >= radius * radius {
+            continue;
+        }
+        match node.kind {
+            NodeKind::Branch { left, right } => {
+                stack.push(right);
+                stack.push(left);
+            }
+            NodeKind::Leaf { start, end } => {
+                for order in start..end {
+                    *visits += 1;
+                    if *visits > MAX_AO_RAYS {
+                        bail!("Curvature neighborhood exceeds CPU traversal budget");
+                    }
+                    let tri = &bvh.triangles[bvh.order[order]];
+                    let vertices = tri.indices.map(|i| &mesh.vertices[i as usize]);
+                    let [a, b, c] = vertices.map(|v| DVec3::from_array(v.position.map(f64::from)));
+                    // Degenerate faces cannot contribute a meaningful closest point.
+                    if (b - a).cross(c - a).length_squared() <= 1.0e-28 {
+                        continue;
+                    }
+                    let (q, bary) = closest_triangle_point(p, a, b, c);
+                    let mut d = q - p;
+                    let mut distance = d.length();
+                    if distance >= radius {
+                        continue;
+                    }
+                    if distance <= radius * 1.0e-3 {
+                        let Some(direction) = ((a + b + c) / 3.0 - p).try_normalize() else {
+                            continue;
+                        };
+                        distance = radius * 1.0e-3;
+                        d = direction * distance;
+                    }
+                    let normal = DVec3::from_array(vertices[0].normal.map(f64::from)) * bary[0]
+                        + DVec3::from_array(vertices[1].normal.map(f64::from)) * bary[1]
+                        + DVec3::from_array(vertices[2].normal.map(f64::from)) * bary[2];
+                    let Some(normal) = normal.try_normalize() else {
+                        continue;
+                    };
+                    let difference = normal - n;
+                    if difference.length_squared() < 1.0e-6 {
+                        continue;
+                    }
+                    let w = 1.0 - distance / radius;
+                    sum += w * difference.dot(d / distance);
+                    weight += w;
+                    nearest = nearest.max(w);
+                }
+            }
+        }
+    }
+    Ok(if weight > 0.0 {
+        0.5 + 0.5 * (sum / weight).clamp(-1.0, 1.0) * nearest
+    } else {
+        0.5
+    })
+}
+
+// Closest point and barycentric coordinates, following the SubCraft MIT
+// implementation of Ericson's triangle Voronoi-region construction.
+fn closest_triangle_point(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> (DVec3, [f64; 3]) {
+    let ab = b - a;
+    let ac = c - a;
+    let ap = p - a;
+    let d1 = ab.dot(ap);
+    let d2 = ac.dot(ap);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return (a, [1.0, 0.0, 0.0]);
+    }
+    let bp = p - b;
+    let d3 = ab.dot(bp);
+    let d4 = ac.dot(bp);
+    if d3 >= 0.0 && d4 <= d3 {
+        return (b, [0.0, 1.0, 0.0]);
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let v = d1 / (d1 - d3);
+        return (a + ab * v, [1.0 - v, v, 0.0]);
+    }
+    let cp = p - c;
+    let d5 = ab.dot(cp);
+    let d6 = ac.dot(cp);
+    if d6 >= 0.0 && d5 <= d6 {
+        return (c, [0.0, 0.0, 1.0]);
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let w = d2 / (d2 - d6);
+        return (a + ac * w, [1.0 - w, 0.0, w]);
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return (b + (c - b) * w, [0.0, 1.0 - w, w]);
+    }
+    let denom = (va + vb + vc).recip();
+    let v = vb * denom;
+    let w = vc * denom;
+    (a + ab * v + ac * w, [1.0 - v - w, v, w])
+}
+
 fn tangent_frame(normal: DVec3) -> (DVec3, DVec3) {
     let reference = if normal.z.abs() < 0.999 {
         DVec3::Z
@@ -1660,6 +1945,164 @@ mod tests {
         thread,
         time::{Duration, Instant},
     };
+
+    fn surface_options() -> SurfaceMapBakeOptions<'static> {
+        SurfaceMapBakeOptions {
+            size: 64,
+            bindings: &[Some(1)],
+            active_set_id: 1,
+            max_ray_distance: 1.0,
+            curvature_radius: 0.4,
+            sample_count: 16,
+            seed: 73,
+            working_budget_bytes: 128 * 1024 * 1024,
+        }
+    }
+
+    #[test]
+    fn subcraft_curvature_flat_and_thickness_open_are_neutral() {
+        let mesh = triangle_mesh();
+        let cancel = AtomicBool::new(false);
+        let curvature = bake_curvature(&mesh, surface_options(), &cancel).unwrap();
+        let thickness = bake_thickness(&mesh, surface_options(), &cancel).unwrap();
+        assert!(curvature.pixels().any(|p| p[3] == 255));
+        for (c, t) in curvature.pixels().zip(thickness.pixels()) {
+            if c[3] != 0 {
+                assert_eq!(c.0, [128, 128, 128, 255]);
+                assert_eq!(t.0, [0, 0, 0, 255]);
+            } else {
+                assert_eq!(t[3], 0);
+            }
+        }
+        assert_eq!(
+            curvature.as_raw(),
+            bake_curvature(&mesh, surface_options(), &cancel)
+                .unwrap()
+                .as_raw()
+        );
+    }
+
+    #[test]
+    fn subcraft_curvature_distinguishes_convex_and_concave_across_uv_seam() {
+        let cancel = AtomicBool::new(false);
+        let corner = |concave: bool| {
+            let mut mesh = triangle_mesh();
+            // Separate vertices and a distant UV island deliberately retain the seam.
+            let z = if concave { 1.0 } else { -1.0 };
+            let normal = if concave {
+                [1.0, 0.0, 0.0]
+            } else {
+                [-1.0, 0.0, 0.0]
+            };
+            let first = mesh.vertices.len() as u32;
+            mesh.vertices.extend([
+                vertex([0.0, 0.0, 0.0], normal, [0.95, 0.95]),
+                vertex([0.0, 1.0, 0.0], normal, [0.99, 0.95]),
+                vertex([0.0, 0.0, z], normal, [0.95, 0.99]),
+            ]);
+            mesh.indices.extend([first, first + 1, first + 2]);
+            mesh.triangle_materials.push(0);
+            mesh
+        };
+        let convex = bake_curvature(&corner(false), surface_options(), &cancel).unwrap();
+        let concave = bake_curvature(&corner(true), surface_options(), &cancel).unwrap();
+        // Near x=0, away from both the diagonal and separate island.
+        assert!(convex.get_pixel(8, 40)[0] > 128);
+        assert!(concave.get_pixel(8, 40)[0] < 128);
+    }
+
+    #[test]
+    fn subcraft_thickness_detects_opposite_surface_and_is_deterministic() {
+        let mut mesh = triangle_mesh();
+        let first = mesh.vertices.len() as u32;
+        mesh.vertices.extend([
+            vertex([-10.0, -10.0, -0.1], [0.0, 0.0, -1.0], [0.95, 0.95]),
+            vertex([20.0, -10.0, -0.1], [0.0, 0.0, -1.0], [0.99, 0.95]),
+            vertex([-10.0, 20.0, -0.1], [0.0, 0.0, -1.0], [0.95, 0.99]),
+        ]);
+        mesh.indices.extend([first, first + 1, first + 2]);
+        mesh.triangle_materials.push(0);
+        let cancel = AtomicBool::new(false);
+        let result = bake_thickness(&mesh, surface_options(), &cancel).unwrap();
+        assert!(result.get_pixel(16, 40)[0] > 128);
+        assert_eq!(
+            result.as_raw(),
+            bake_thickness(&mesh, surface_options(), &cancel)
+                .unwrap()
+                .as_raw()
+        );
+    }
+
+    #[test]
+    fn subcraft_surface_maps_enforce_cancel_memory_bindings_and_numeric_limits() {
+        let mesh = triangle_mesh();
+        let cancel = AtomicBool::new(false);
+        for curvature in [true, false] {
+            let bake = |o, c: &AtomicBool| bake_surface_map(&mesh, o, c, curvature);
+            assert!(bake(surface_options(), &AtomicBool::new(true)).is_err());
+            assert!(bake(
+                SurfaceMapBakeOptions {
+                    working_budget_bytes: 1,
+                    ..surface_options()
+                },
+                &cancel
+            )
+            .is_err());
+            assert!(bake(
+                SurfaceMapBakeOptions {
+                    bindings: &[],
+                    ..surface_options()
+                },
+                &cancel
+            )
+            .is_err());
+            assert!(bake(
+                SurfaceMapBakeOptions {
+                    size: u32::MAX,
+                    ..surface_options()
+                },
+                &cancel
+            )
+            .is_err());
+        }
+        assert!(bake_curvature(
+            &mesh,
+            SurfaceMapBakeOptions {
+                curvature_radius: f32::NAN,
+                ..surface_options()
+            },
+            &cancel
+        )
+        .is_err());
+        assert!(bake_thickness(
+            &mesh,
+            SurfaceMapBakeOptions {
+                sample_count: 0,
+                ..surface_options()
+            },
+            &cancel
+        )
+        .is_err());
+        assert!(bake_thickness(
+            &mesh,
+            SurfaceMapBakeOptions {
+                max_ray_distance: f32::INFINITY,
+                ..surface_options()
+            },
+            &cancel
+        )
+        .is_err());
+        let blank = bake_curvature(
+            &mesh,
+            SurfaceMapBakeOptions {
+                bindings: &[Some(2)],
+                ..surface_options()
+            },
+            &cancel,
+        )
+        .unwrap();
+        assert!(blank.pixels().all(|p| p[3] == 0));
+    }
 
     fn triangle_mesh() -> Mesh {
         Mesh {

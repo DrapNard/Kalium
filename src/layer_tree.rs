@@ -5,8 +5,8 @@
 //! and value-based fill layers without changing the legacy layer payload.
 
 use crate::document::{
-    decode_normal, linear_to_srgb, normalize3, reoriented_normal, srgb_to_linear, BlendMode,
-    Channel, Layer, MAX_DECODED_BYTES, MAX_SIZE,
+    decode_normal, linear_to_srgb, srgb_to_linear, BlendMode, Channel, Layer, MAX_DECODED_BYTES,
+    MAX_SIZE,
 };
 use anyhow::{bail, Result};
 use image::{GrayImage, ImageBuffer, Rgba, RgbaImage};
@@ -940,14 +940,11 @@ fn blend_composite_pixel(
     }
     match channel {
         Channel::BaseColor | Channel::Emissive => {
-            for (c, source_component) in source[..3].iter().enumerate() {
-                let src = srgb_to_linear(*source_component as f32 / 255.0);
-                let dst = srgb_to_linear(destination.value[c] as f32 / 255.0);
-                let blended = match mode {
-                    BlendMode::Normal | BlendMode::Detail => src,
-                    BlendMode::Multiply => src * dst,
-                    BlendMode::Add => (src + dst).min(1.0),
-                };
+            let src = std::array::from_fn(|c| srgb_to_linear(source[c] as f32 / 255.0));
+            let dst = std::array::from_fn(|c| srgb_to_linear(destination.value[c] as f32 / 255.0));
+            let blended = crate::blend::blend_rgb(mode, dst, src);
+            for c in 0..3 {
+                let (src, dst, blended) = (src[c], dst[c], blended[c]);
                 if dst_coverage >= 1.0 {
                     let linear = dst + (blended - dst) * source_coverage;
                     destination.value[c] =
@@ -963,30 +960,9 @@ fn blend_composite_pixel(
             }
         }
         Channel::Normal => {
-            let dst = decode_normal(&destination.value[..3]);
-            let src = decode_normal(&source[..3]);
-            let normal = if mode == BlendMode::Detail && dst_coverage > 1.0e-8 {
-                let detail = normalize3([
-                    src[0] * source_coverage,
-                    src[1] * source_coverage,
-                    1.0 + (src[2] - 1.0) * source_coverage,
-                ]);
-                reoriented_normal(dst, detail)
-            } else if mode == BlendMode::Detail {
-                src
-            } else if dst_coverage >= 1.0 {
-                normalize3([
-                    dst[0] * (1.0 - source_coverage) + src[0] * source_coverage,
-                    dst[1] * (1.0 - source_coverage) + src[1] * source_coverage,
-                    dst[2] * (1.0 - source_coverage) + src[2] * source_coverage,
-                ])
-            } else {
-                normalize3([
-                    source_coverage * src[0] + dst_coverage * (1.0 - source_coverage) * dst[0],
-                    source_coverage * src[1] + dst_coverage * (1.0 - source_coverage) * dst[1],
-                    source_coverage * src[2] + dst_coverage * (1.0 - source_coverage) * dst[2],
-                ])
-            };
+            let dst = std::array::from_fn(|c| destination.value[c] as f32 / 255.0);
+            let src = std::array::from_fn(|c| source[c] as f32 / 255.0);
+            let normal = crate::blend::blend_normal(mode, dst, src, source_coverage, dst_coverage);
             for (component, normal_component) in destination.value[..3].iter_mut().zip(normal) {
                 *component = ((normal_component * 0.5 + 0.5) * 255.0)
                     .round()
@@ -995,15 +971,11 @@ fn blend_composite_pixel(
         }
         _ => {
             for (c, source_component) in source[..3].iter().enumerate() {
-                let src = *source_component as f32;
-                let dst = destination.value[c] as f32;
-                let blended = match mode {
-                    BlendMode::Normal | BlendMode::Detail => src,
-                    BlendMode::Multiply => dst * src / 255.0,
-                    BlendMode::Add => (dst + src).min(255.0),
-                };
+                let src = *source_component as f32 / 255.0;
+                let dst = destination.value[c] as f32 / 255.0;
+                let blended = crate::blend::blend_rgb(mode, [dst; 3], [src; 3])[0];
                 if dst_coverage >= 1.0 {
-                    destination.value[c] = (dst + (blended - dst) * source_coverage)
+                    destination.value[c] = ((dst + (blended - dst) * source_coverage) * 255.0)
                         .round()
                         .clamp(0.0, 255.0) as u8;
                     continue;
@@ -1011,7 +983,9 @@ fn blend_composite_pixel(
                 let numerator = source_coverage * (1.0 - dst_coverage) * src
                     + source_coverage * dst_coverage * blended
                     + (1.0 - source_coverage) * dst_coverage * dst;
-                destination.value[c] = (numerator / out_coverage).round().clamp(0.0, 255.0) as u8;
+                destination.value[c] = ((numerator / out_coverage) * 255.0)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
             }
         }
     }
@@ -1804,6 +1778,37 @@ mod tests {
             (decoded[0] * decoded[0] + decoded[1] * decoded[1] + decoded[2] * decoded[2]).sqrt();
         assert!((length - 1.0).abs() < 0.01);
         assert_ne!(normal, Channel::Normal.background());
+    }
+
+    #[test]
+    fn expanded_blends_reach_recursive_compositor_with_channel_semantics() {
+        let mut color = CompositePixel {
+            value: [128, 128, 128, 255],
+            coverage: 1.0,
+        };
+        blend_composite_pixel(
+            &mut color,
+            [128, 128, 128, 255],
+            1.0,
+            Channel::BaseColor,
+            BlendMode::Screen,
+        );
+        let linear = srgb_to_linear(128.0 / 255.0);
+        let expected = (linear_to_srgb(linear + linear - linear * linear) * 255.0).round() as u8;
+        assert_eq!(color.value, [expected, expected, expected, 255]);
+
+        let mut data = CompositePixel {
+            value: [128, 128, 128, 255],
+            coverage: 1.0,
+        };
+        blend_composite_pixel(
+            &mut data,
+            [64, 64, 64, 255],
+            1.0,
+            Channel::Roughness,
+            BlendMode::Divide,
+        );
+        assert_eq!(data.value, [255, 255, 255, 255]);
     }
 
     #[test]
